@@ -3,11 +3,36 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Мой сайт</title>
-  <link rel="stylesheet" href="css/style.css" />
+  <title>Postcards — subach.uk</title>
+  <link rel="stylesheet" href="/style.css" />
 </head>
 <body>
-  <h1>>Юля привет ✅</h1>
-  <script src="js/main.js"></script>
+  <header class="top">
+    <div>
+      <div class="title">Postcards</div>
+      <div class="sub">Выбери открытку и нажми “Write in Telegram”.</div>
+    </div>
+    <input id="q" class="search" placeholder="Search by ID…" />
+  </header>
+
+  <main>
+    <div id="grid" class="grid"></div>
+  </main>
+
+  <div id="modal" class="modal hidden" aria-hidden="true">
+    <div class="modal-inner">
+      <button id="close" class="close" aria-label="Close">×</button>
+      <img id="modalImg" class="big" alt="" />
+      <div class="bar">
+        <div>ID: <span id="modalId" class="mono"></span></div>
+        <div class="actions">
+          <button id="copy" class="btn">Copy ID</button>
+          <a id="tg" class="btn primary" target="_blank" rel="noreferrer">Write in Telegram</a>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="/app.js"></script>
 </body>
 </html>
