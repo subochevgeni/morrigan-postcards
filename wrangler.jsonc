@@ -1,5 +1,5 @@
 {
-  "name": "my-static-site",
+  "name": "hello",
   "compatibility_date": "2026-02-01",
   "assets": { "directory": "./public" }
 }
