@@ -6,8 +6,8 @@
   <title>Postcards — subach.uk</title>
   <link rel="stylesheet" href="/style.css" />
 
-  <!-- Cloudflare Turnstile -->
-  <script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>
+  <!-- Turnstile explicit render -->
+  <script src="https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit" async defer></script>
 </head>
 <body>
   <header class="top">
@@ -34,21 +34,19 @@
         <div class="actions">
           <button id="copy" class="btn">Copy ID</button>
           <a id="tg" class="btn primary" target="_blank" rel="noreferrer">Message on Telegram</a>
-          <button id="openForm" class="btn">Request (no Telegram)</button>
         </div>
       </div>
 
-      <form id="reqForm" class="form hidden">
-        <div class="formTitle">Request this postcard</div>
+      <!-- Request form is ALWAYS visible (so the button never "disappears") -->
+      <form id="reqForm" class="form">
+        <div class="formTitle">No Telegram? Send a request</div>
 
-        <input id="reqName" placeholder="Your nickname / handle (required)" required />
+        <input id="reqName" placeholder="Your nickname / handle (e.g. Postcrossing username)" required />
         <textarea id="reqMsg" placeholder="Message (optional)"></textarea>
 
-        <!-- Turnstile widget (IMPORTANT: paste site key) -->
-        <div class="tsBox">
-          <div class="cf-turnstile"
-               data-sitekey="0x4AAAAAACW5TtAmWWLLFZ7V"
-               data-theme="dark"></div>
+        <div class="tsRow">
+          <div id="tsWidget"></div>
+          <div class="tsHint">Anti-spam check is required.</div>
         </div>
 
         <!-- honeypot -->
@@ -58,7 +56,7 @@
         <div id="reqStatus" class="status"></div>
 
         <div class="hint">
-          Tip: after sending the request, please also contact the owner using any channel you have.
+          Tip: include a username you can be reached at (Postcrossing / Instagram / Discord).
         </div>
       </form>
     </div>

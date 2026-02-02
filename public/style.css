@@ -90,7 +90,6 @@ main { padding: var(--pad); }
 }
 .btn.primary { background: rgba(255,255,255,.14); }
 
-.form.hidden { display: none; }
 .form {
   padding: 14px;
   display: grid;
@@ -110,11 +109,9 @@ main { padding: var(--pad); }
 }
 .form textarea { min-height: 90px; resize: vertical; }
 
-.tsBox {
-  padding: 10px 0;
-  display: grid;
-  justify-content: start;
-}
+.tsRow { display: grid; gap: 6px; justify-content: start; }
+.tsHint { font-size: 12px; opacity: .65; }
+
 .status { font-size: 12px; opacity: .85; min-height: 16px; }
 .hint { font-size: 12px; opacity: .65; margin-top: 2px; }
 .hp { display: none; }
