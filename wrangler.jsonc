@@ -18,5 +18,9 @@
       "database_name": "postcards",
       "database_id": "297d3e93-642d-4e85-819c-f4169b1e4ea7"
     }
-  ]
+  ],
+  "vars": {
+  "ADMIN_CHAT_ID": "50919507"
+}
+
 }
