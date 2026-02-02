@@ -1,46 +1,33 @@
 const BOT_USERNAME = "postcardsubot";
 
-// TODO: paste your Turnstile Site Key here (NOT secret)
-const TURNSTILE_SITE_KEY = "0x4AAAAAACW5TtAmWWLLFZ7V";
+const $ = (id) => document.getElementById(id);
 
-const grid = document.getElementById("grid");
-const q = document.getElementById("q");
+const grid = $("grid");
+const q = $("q");
 
-const modal = document.getElementById("modal");
-const closeBtn = document.getElementById("close");
-const modalImg = document.getElementById("modalImg");
-const modalId = document.getElementById("modalId");
-const copyBtn = document.getElementById("copy");
-const tgLink = document.getElementById("tg");
+const modal = $("modal");
+const closeBtn = $("close");
+const modalImg = $("modalImg");
+const modalId = $("modalId");
+const copyBtn = $("copy");
+const tgLink = $("tg");
 
-const openFormBtn = document.getElementById("openForm");
-const form = document.getElementById("reqForm");
-const reqName = document.getElementById("reqName");
-const reqMsg = document.getElementById("reqMsg");
-const reqWebsite = document.getElementById("reqWebsite");
-const reqStatus = document.getElementById("reqStatus");
-const reqSubmit = document.getElementById("reqSubmit");
-const tsWidget = document.getElementById("tsWidget");
+const openFormBtn = $("openForm");
+const form = $("reqForm");
+const reqName = $("reqName");
+const reqMsg = $("reqMsg");
+const reqWebsite = $("reqWebsite");
+const reqStatus = $("reqStatus");
+const reqSubmit = $("reqSubmit");
 
 let items = [];
-let turnstileRendered = false;
 
 function getTurnstileToken() {
   const el = document.querySelector('[name="cf-turnstile-response"]');
   return el ? String(el.value || "").trim() : "";
 }
 
-function ensureTurnstile() {
-  if (turnstileRendered) return;
-  // implicit render container
-  tsWidget.setAttribute("data-sitekey", TURNSTILE_SITE_KEY);
-  tsWidget.setAttribute("data-theme", "dark");
-  // Turnstile script will render it automatically
-  turnstileRendered = true;
-}
-
 function resetTurnstile() {
-  // if API loaded, reset the first widget on the page
   try {
     if (window.turnstile && typeof window.turnstile.reset === "function") {
       window.turnstile.reset();
@@ -62,21 +49,19 @@ function openModal(item) {
     setTimeout(() => (copyBtn.textContent = "Copy ID"), 900);
   };
 
-  openFormBtn.onclick = () => {
-    form.classList.toggle("hidden");
-    reqStatus.textContent = "";
-    if (!form.classList.contains("hidden")) {
-      ensureTurnstile();
-      setTimeout(resetTurnstile, 200);
-    }
-  };
-
   // reset form state each time
   form.classList.add("hidden");
   reqStatus.textContent = "";
   reqName.value = "";
   reqMsg.value = "";
   reqWebsite.value = "";
+  setTimeout(resetTurnstile, 250);
+
+  openFormBtn.onclick = () => {
+    form.classList.toggle("hidden");
+    reqStatus.textContent = "";
+    setTimeout(resetTurnstile, 250);
+  };
 
   location.hash = item.id;
 }
@@ -127,6 +112,8 @@ q.oninput = render;
 form.addEventListener("submit", async (e) => {
   e.preventDefault();
 
+  reqStatus.textContent = ""; // чтобы было видно, что кнопка сработала
+
   const id = modalId.textContent.trim();
   const name = reqName.value.trim();
   const message = reqMsg.value.trim();
@@ -137,7 +124,7 @@ form.addEventListener("submit", async (e) => {
     return;
   }
   if (!token) {
-    reqStatus.textContent = "❌ Please complete the anti-spam check.";
+    reqStatus.textContent = "❌ Please complete the anti-spam check (Turnstile).";
     return;
   }
 
@@ -160,22 +147,22 @@ form.addEventListener("submit", async (e) => {
     });
 
     if (r.ok) {
-      reqStatus.textContent = "✅ Sent! The owner got your request in Telegram.";
+      reqStatus.textContent = "✅ Sent! The owners received your request in Telegram.";
       form.classList.add("hidden");
-      setTimeout(resetTurnstile, 200);
+      setTimeout(resetTurnstile, 250);
     } else if (r.status === 404) {
       reqStatus.textContent = "❌ Sorry — this postcard is no longer available.";
-      setTimeout(resetTurnstile, 200);
+      setTimeout(resetTurnstile, 250);
     } else if (r.status === 403) {
       reqStatus.textContent = "❌ Anti-spam failed. Please retry.";
-      setTimeout(resetTurnstile, 200);
+      setTimeout(resetTurnstile, 250);
     } else {
       reqStatus.textContent = "❌ Failed to send. Please try again.";
-      setTimeout(resetTurnstile, 200);
+      setTimeout(resetTurnstile, 250);
     }
-  } catch {
+  } catch (err) {
     reqStatus.textContent = "❌ Network error. Please try again.";
-    setTimeout(resetTurnstile, 200);
+    setTimeout(resetTurnstile, 250);
   } finally {
     reqSubmit.disabled = false;
   }
