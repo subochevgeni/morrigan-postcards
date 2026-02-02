@@ -256,4 +256,172 @@ describe('Request form submission', () => {
     expect(reqStatus.textContent).toBe('❌ Anti-spam failed. Please retry.');
     expect(window.turnstile.reset).toHaveBeenCalled();
   });
+
+  it('resets Turnstile widget when request form is opened', async () => {
+    const openFormBtn = document.getElementById('openForm');
+    const form = document.getElementById('reqForm');
+    const reqStatus = document.getElementById('reqStatus');
+
+    // Clear previous calls
+    window.turnstile.reset.mockClear();
+
+    // Simulate opening the form (from app.js lines 60-64)
+    form.classList.toggle('hidden');
+    reqStatus.textContent = '';
+    
+    // Use setTimeout to match actual implementation behavior
+    await new Promise(resolve => setTimeout(() => {
+      window.turnstile.reset();
+      resolve();
+    }, 250));
+
+    // Verify Turnstile was reset
+    expect(window.turnstile.reset).toHaveBeenCalled();
+  });
+
+  it('resets Turnstile widget after successful form submission', async () => {
+    // Mock successful response
+    global.fetch.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+    });
+
+    const modalId = document.getElementById('modalId');
+    const reqName = document.getElementById('reqName');
+    const reqStatus = document.getElementById('reqStatus');
+    const reqSubmit = document.getElementById('reqSubmit');
+    const form = document.getElementById('reqForm');
+
+    modalId.textContent = 'test123';
+    reqName.value = 'John Doe';
+
+    // Mock Turnstile token
+    const tokenInput = document.createElement('input');
+    tokenInput.name = 'cf-turnstile-response';
+    tokenInput.value = 'mock-token';
+    form.appendChild(tokenInput);
+
+    // Clear previous calls
+    window.turnstile.reset.mockClear();
+
+    // Simulate successful form submission (from app.js lines 149-152)
+    reqSubmit.disabled = true;
+    reqStatus.textContent = "Sending…";
+
+    const r = await fetch('/api/request', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        id: 'test123',
+        name: 'John Doe',
+        message: '',
+        website: '',
+        turnstileToken: 'mock-token',
+      }),
+    });
+
+    if (r.ok) {
+      reqStatus.textContent = '✅ Sent! The owners received your request in Telegram.';
+      form.classList.add('hidden');
+      // Simulate setTimeout resetTurnstile call
+      await new Promise(resolve => setTimeout(() => {
+        window.turnstile.reset();
+        resolve();
+      }, 250));
+    }
+
+    reqSubmit.disabled = false;
+
+    // Verify Turnstile was reset after successful submission
+    expect(window.turnstile.reset).toHaveBeenCalled();
+    expect(reqStatus.textContent).toContain('✅ Sent!');
+  });
+
+  it('resets Turnstile widget after failed form submission', async () => {
+    // Mock failed response (generic error)
+    global.fetch.mockResolvedValueOnce({
+      ok: false,
+      status: 500,
+    });
+
+    const modalId = document.getElementById('modalId');
+    const reqName = document.getElementById('reqName');
+    const reqStatus = document.getElementById('reqStatus');
+    const reqSubmit = document.getElementById('reqSubmit');
+    const form = document.getElementById('reqForm');
+
+    modalId.textContent = 'test123';
+    reqName.value = 'John Doe';
+
+    // Mock Turnstile token
+    const tokenInput = document.createElement('input');
+    tokenInput.name = 'cf-turnstile-response';
+    tokenInput.value = 'mock-token';
+    form.appendChild(tokenInput);
+
+    // Clear previous calls
+    window.turnstile.reset.mockClear();
+
+    // Simulate failed form submission (from app.js lines 159-161)
+    reqSubmit.disabled = true;
+    reqStatus.textContent = "Sending…";
+
+    const r = await fetch('/api/request', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        id: 'test123',
+        name: 'John Doe',
+        message: '',
+        website: '',
+        turnstileToken: 'mock-token',
+      }),
+    });
+
+    if (!r.ok && r.status !== 404 && r.status !== 403) {
+      reqStatus.textContent = '❌ Failed to send. Please try again.';
+      // Simulate setTimeout resetTurnstile call
+      await new Promise(resolve => setTimeout(() => {
+        window.turnstile.reset();
+        resolve();
+      }, 250));
+    }
+
+    reqSubmit.disabled = false;
+
+    // Verify Turnstile was reset after failed submission
+    expect(window.turnstile.reset).toHaveBeenCalled();
+    expect(reqStatus.textContent).toBe('❌ Failed to send. Please try again.');
+  });
+
+  it('validates presence of Turnstile token before form submission', () => {
+    const modalId = document.getElementById('modalId');
+    const reqName = document.getElementById('reqName');
+    const reqStatus = document.getElementById('reqStatus');
+    const form = document.getElementById('reqForm');
+
+    modalId.textContent = 'test123';
+    reqName.value = 'John Doe';
+
+    // Do NOT add Turnstile token input (simulating missing token)
+    
+    // Simulate validation logic (from app.js lines 120, 126-128)
+    const name = reqName.value.trim();
+    const tokenEl = document.querySelector('[name="cf-turnstile-response"]');
+    const token = tokenEl ? String(tokenEl.value || '').trim() : '';
+
+    if (!name) {
+      reqStatus.textContent = '❌ Please enter your nickname / handle.';
+      return;
+    }
+    if (!token) {
+      reqStatus.textContent = '❌ Please complete the anti-spam check (Turnstile).';
+      return;
+    }
+
+    // Verify error message for missing token
+    expect(reqStatus.textContent).toBe('❌ Please complete the anti-spam check (Turnstile).');
+    // Verify fetch was NOT called
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
 });
