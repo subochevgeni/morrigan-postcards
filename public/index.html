@@ -1,16 +1,19 @@
 <!doctype html>
-<html lang="ru">
+<html lang="en">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Postcards — subach.uk</title>
   <link rel="stylesheet" href="/style.css" />
+
+  <!-- Cloudflare Turnstile -->
+  <script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>
 </head>
 <body>
   <header class="top">
     <div>
       <div class="title">Postcards</div>
-      <div class="sub">Выбери открытку и нажми “Write in Telegram”.</div>
+      <div class="sub">Pick a postcard. First come, first served. No reservations.</div>
     </div>
     <input id="q" class="search" placeholder="Search by ID…" />
   </header>
@@ -22,14 +25,40 @@
   <div id="modal" class="modal hidden" aria-hidden="true">
     <div class="modal-inner">
       <button id="close" class="close" aria-label="Close">×</button>
+
       <img id="modalImg" class="big" alt="" />
+
       <div class="bar">
         <div>ID: <span id="modalId" class="mono"></span></div>
+
         <div class="actions">
           <button id="copy" class="btn">Copy ID</button>
-          <a id="tg" class="btn primary" target="_blank" rel="noreferrer">Write in Telegram</a>
+          <a id="tg" class="btn primary" target="_blank" rel="noreferrer">Message on Telegram</a>
+          <button id="openForm" class="btn">Request (no Telegram)</button>
         </div>
       </div>
+
+      <form id="reqForm" class="form hidden">
+        <div class="formTitle">Request this postcard</div>
+
+        <input id="reqName" placeholder="Your nickname / handle (required)" required />
+        <textarea id="reqMsg" placeholder="Message (optional)"></textarea>
+
+        <!-- Turnstile widget placeholder -->
+        <div id="tsBox" class="tsBox">
+          <div class="cf-turnstile" id="tsWidget"></div>
+        </div>
+
+        <!-- honeypot -->
+        <input id="reqWebsite" class="hp" autocomplete="off" tabindex="-1" placeholder="Website" />
+
+        <button id="reqSubmit" class="btn primary" type="submit">Send request</button>
+        <div id="reqStatus" class="status"></div>
+
+        <div class="hint">
+          Tip: after sending the request, please also contact the owner using any channel you have.
+        </div>
+      </form>
     </div>
   </div>
 

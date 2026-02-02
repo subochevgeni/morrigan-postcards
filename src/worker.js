@@ -9,7 +9,7 @@ const json = (obj, status = 200) =>
 const text = (s, status = 200) => new Response(s, { status });
 
 function makeId(len = 6) {
-  const alphabet = "23456789abcdefghijkmnpqrstuvwxyz"; // без 0/1/l/o
+  const alphabet = "23456789abcdefghijkmnpqrstuvwxyz";
   const bytes = new Uint8Array(len);
   crypto.getRandomValues(bytes);
   let out = "";
@@ -18,7 +18,6 @@ function makeId(len = 6) {
 }
 
 function getAdminList(env) {
-  // backward compatible: если ADMIN_CHAT_IDS нет, используем ADMIN_CHAT_ID
   const raw = (env.ADMIN_CHAT_IDS || String(env.ADMIN_CHAT_ID || "")).trim();
   return raw
     .split(",")
@@ -34,10 +33,7 @@ async function tgApi(env, method, payload) {
     body: JSON.stringify(payload),
   });
   const data = await r.json().catch(() => ({}));
-  if (!data?.ok) {
-    // не кидаем наружу токены/секреты; просто логируем в воркер
-    console.log("tgApi error", method, data);
-  }
+  if (!data?.ok) console.log("tgApi error", method, data);
   return data;
 }
 
@@ -47,6 +43,16 @@ async function tgSend(env, chatId, msg, replyMarkup = null) {
   await tgApi(env, "sendMessage", payload);
 }
 
+async function tgSendPhoto(env, chatId, photoUrl, caption) {
+  // Telegram умеет тянуть фото по HTTP URL. :contentReference[oaicite:5]{index=5}
+  await tgApi(env, "sendPhoto", { chat_id: chatId, photo: photoUrl, caption });
+}
+
+async function tgSendMediaGroup(env, chatId, media) {
+  // Метод sendMediaGroup существует в Bot API (альбомы). :contentReference[oaicite:6]{index=6}
+  return tgApi(env, "sendMediaGroup", { chat_id: chatId, media });
+}
+
 async function tgGetFileUrl(env, fileId) {
   const data = await tgApi(env, "getFile", { file_id: fileId });
   const filePath = data?.result?.file_path;
@@ -54,22 +60,7 @@ async function tgGetFileUrl(env, fileId) {
   return `https://api.telegram.org/file/bot${env.TG_BOT_TOKEN}/${filePath}`;
 }
 
-function adminHelpText() {
-  return (
-    "📌 Admin menu\n" +
-    "• Просто пришли ФОТО (как Photo) — добавлю открытку\n\n" +
-    "Команды:\n" +
-    "/help — это меню\n" +
-    "/myid — показать chat_id\n" +
-    "/stats — сколько доступно\n" +
-    "/last — последняя добавленная\n" +
-    "/list [n] — последние n ID (по умолчанию 20)\n" +
-    "/delete <id> — удалить открытку"
-  );
-}
-
-function adminHelpKeyboard() {
-  // Небольшая подсказка-клавиатура (не обязательна, но удобно)
+function adminKeyboard() {
   return {
     keyboard: [
       [{ text: "/help" }, { text: "/stats" }, { text: "/last" }],
@@ -77,8 +68,21 @@ function adminHelpKeyboard() {
       [{ text: "/delete " }],
     ],
     resize_keyboard: true,
-    one_time_keyboard: false,
   };
+}
+
+function adminHelpText() {
+  return (
+    "📌 Admin menu\n" +
+    "• Send a postcard photo (as Photo) to add it\n\n" +
+    "Commands:\n" +
+    "/help — this menu\n" +
+    "/myid — show chat_id\n" +
+    "/stats — how many available\n" +
+    "/last — last added\n" +
+    "/list [n] — last n IDs\n" +
+    "/delete <id> — delete postcard"
+  );
 }
 
 async function dbGetCard(env, id) {
@@ -110,10 +114,11 @@ async function dbStats(env) {
 }
 
 async function dbLast(env) {
-  const row = await env.DB.prepare(
-    "SELECT id, created_at FROM cards WHERE status='available' ORDER BY created_at DESC LIMIT 1"
-  ).first();
-  return row || null;
+  return (
+    (await env.DB.prepare(
+      "SELECT id, created_at FROM cards WHERE status='available' ORDER BY created_at DESC LIMIT 1"
+    ).first()) || null
+  );
 }
 
 async function dbList(env, limit) {
@@ -125,10 +130,127 @@ async function dbList(env, limit) {
   return (results || []).map((r) => r.id);
 }
 
+async function notifyAdmins(env, message) {
+  for (const adminId of getAdminList(env)) {
+    await tgSend(env, adminId, message);
+  }
+}
+
+async function notifyAdminsWithPreviews(env, requestedId, requestText) {
+  const latest = await dbList(env, 8);
+  const unique = [];
+  const pushUnique = (x) => {
+    if (x && !unique.includes(x)) unique.push(x);
+  };
+  pushUnique(requestedId);
+  for (const id of latest) pushUnique(id);
+
+  // максимум 10
+  const ids = unique.slice(0, 10);
+
+  // соберём media array для альбома
+  const media = ids.map((id, idx) => ({
+    type: "photo",
+    media: `https://subach.uk/thumb/${id}.jpg`,
+    caption: idx === 0 ? requestText : `ID: ${id}`,
+  }));
+
+  for (const adminId of getAdminList(env)) {
+    // Пытаемся отправить альбом; если упадёт — fallback на отдельные sendPhoto
+    const res = await tgSendMediaGroup(env, adminId, media);
+    if (!res?.ok) {
+      await tgSend(env, adminId, requestText);
+      for (const id of ids) {
+        await tgSendPhoto(env, adminId, `https://subach.uk/thumb/${id}.jpg`, `ID: ${id}`);
+      }
+    }
+
+    if (latest.length) {
+      await tgSend(env, adminId, "Available IDs (latest):\n" + latest.join("\n"));
+    }
+  }
+}
+
+async function verifyTurnstile(request, env, token) {
+  // обязательная серверная валидация токена Turnstile через siteverify. :contentReference[oaicite:7]{index=7}
+  const form = new URLSearchParams();
+  form.set("secret", env.TURNSTILE_SECRET_KEY);
+  form.set("response", token);
+
+  const ip = request.headers.get("CF-Connecting-IP");
+  if (ip) form.set("remoteip", ip);
+
+  const r = await fetch("https://challenges.cloudflare.com/turnstile/v0/siteverify", {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: form.toString(),
+  });
+
+  const data = await r.json().catch(() => null);
+  if (!data?.success) return { ok: false, data };
+
+  // мягкая проверка hostname (не ломаем, если поле отсутствует)
+  if (data.hostname && !String(data.hostname).endsWith("subach.uk")) {
+    return { ok: false, data: { ...data, reason: "bad-hostname" } };
+  }
+
+  return { ok: true, data };
+}
+
+async function handleWebRequest(request, env) {
+  if (request.method !== "POST") return text("method not allowed", 405);
+
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    return text("bad json", 400);
+  }
+
+  // Honeypot
+  if (String(body?.website || "").trim()) return json({ ok: true });
+
+  const postcardId = String(body?.id || "").trim().toLowerCase();
+  const name = String(body?.name || "").trim().slice(0, 80);
+  const message = String(body?.message || "").trim().slice(0, 600);
+  const token = String(body?.turnstileToken || "").trim();
+
+  if (!/^[0-9a-z]{4,12}$/i.test(postcardId)) return text("bad id", 400);
+  if (!name) return text("name required", 400);
+  if (!token) return text("turnstile required", 403);
+
+  const ts = await verifyTurnstile(request, env, token);
+  if (!ts.ok) return text("turnstile failed", 403);
+
+  const card = await env.DB.prepare(
+    "SELECT id FROM cards WHERE id=?1 AND status='available'"
+  )
+    .bind(postcardId)
+    .first();
+
+  if (!card) return text("not found", 404);
+
+  await env.DB.prepare(
+    "INSERT INTO requests (postcard_id, name, message, created_at) VALUES (?1, ?2, ?3, ?4)"
+  )
+    .bind(postcardId, name, message || null, Date.now())
+    .run();
+
+  const requestText =
+    "🌍 New request (no Telegram)\n" +
+    `ID: ${postcardId}\n` +
+    `From: ${name}\n` +
+    `Message: ${message || "-"}\n` +
+    `Link: https://subach.uk/#${postcardId}`;
+
+  await notifyAdminsWithPreviews(env, postcardId, requestText);
+
+  return json({ ok: true });
+}
+
 async function handleTelegram(request, env) {
   if (request.method !== "POST") return text("method not allowed", 405);
 
-  // Проверка секретного токена webhook
   const secret = request.headers.get("X-Telegram-Bot-Api-Secret-Token");
   if (!secret || secret !== env.TG_WEBHOOK_SECRET) return text("unauthorized", 401);
 
@@ -142,66 +264,51 @@ async function handleTelegram(request, env) {
   const admins = getAdminList(env);
   const isAdmin = admins.includes(chatId);
 
-  // /myid — доступно всем (чтобы быстро добавлять новых админов)
+  // /myid for everyone
   if (typeof msg.text === "string" && msg.text.trim() === "/myid") {
-    await tgSend(env, chatId, `Ваш chat_id: ${chatId}\nusername: ${username}`);
-    // уведомим основного админа (пусть ADMIN_CHAT_ID остаётся “главным”)
+    await tgSend(env, chatId, `Your chat_id: ${chatId}\nusername: ${username}`);
     if (env.ADMIN_CHAT_ID) {
-      await tgSend(env, String(env.ADMIN_CHAT_ID), `👤 /myid от ${username}: chat_id=${chatId}`);
+      await tgSend(env, String(env.ADMIN_CHAT_ID), `👤 /myid from ${username}: chat_id=${chatId}`);
     }
     return json({ ok: true });
   }
 
-  // /start pick_<id> — любой пользователь выбирает открытку через ссылку с сайта
+  // User clicked from website: /start pick_<id>
   if (typeof msg.text === "string" && msg.text.startsWith("/start")) {
     const m = msg.text.match(/pick_([0-9a-z]+)/i);
     if (m && !isAdmin) {
       const pickedId = m[1];
-      if (env.ADMIN_CHAT_ID) {
-        await tgSend(
-          env,
-          String(env.ADMIN_CHAT_ID),
-          `📩 Запрос открытки: ${pickedId}\nОт: ${username}\nЧат: ${chatId}`
-        );
-      }
-      await tgSend(env, chatId, `Ок! Я передал запрос владельцу 🙂\nID: ${pickedId}`);
+      await notifyAdmins(env, `📩 Telegram request\nID: ${pickedId}\nFrom: ${username}\nChat: ${chatId}\nLink: https://subach.uk/#${pickedId}`);
+      await tgSend(env, chatId, `✅ Got it! I forwarded your request.\nID: ${pickedId}`);
       return json({ ok: true });
     }
 
-    // Админу по /start тоже покажем меню
-    if (isAdmin) {
-      await tgSend(env, chatId, adminHelpText(), adminHelpKeyboard());
-    }
+    if (isAdmin) await tgSend(env, chatId, adminHelpText(), adminKeyboard());
     return json({ ok: true });
   }
 
-  // Админские команды
+  // Admin commands
   if (isAdmin && typeof msg.text === "string" && msg.text.startsWith("/")) {
     const parts = msg.text.trim().split(/\s+/);
     const cmd = parts[0].toLowerCase();
 
     if (cmd === "/help" || cmd === "/menu") {
-      await tgSend(env, chatId, adminHelpText(), adminHelpKeyboard());
+      await tgSend(env, chatId, adminHelpText(), adminKeyboard());
       return json({ ok: true });
     }
 
     if (cmd === "/stats") {
-      const cnt = await dbStats(env);
-      await tgSend(env, chatId, `📊 Доступно открыток: ${cnt}`);
+      await tgSend(env, chatId, `📊 Available postcards: ${await dbStats(env)}`);
       return json({ ok: true });
     }
 
     if (cmd === "/last") {
       const last = await dbLast(env);
-      if (!last) {
-        await tgSend(env, chatId, "Пока нет открыток.");
-      } else {
-        await tgSend(
-          env,
-          chatId,
-          `🆕 Последняя: ${last.id}\nhttps://subach.uk/#${last.id}`
-        );
-      }
+      await tgSend(
+        env,
+        chatId,
+        last ? `🆕 Last: ${last.id}\nhttps://subach.uk/#${last.id}` : "No postcards yet."
+      );
       return json({ ok: true });
     }
 
@@ -209,71 +316,61 @@ async function handleTelegram(request, env) {
       const nRaw = Number(parts[1] || "20");
       const n = Number.isFinite(nRaw) ? Math.min(Math.max(nRaw, 1), 200) : 20;
       const ids = await dbList(env, n);
-      if (!ids.length) await tgSend(env, chatId, "Список пуст.");
-      else await tgSend(env, chatId, `🗂️ Последние ${ids.length} ID:\n` + ids.join("\n"));
+      await tgSend(env, chatId, ids.length ? `🗂️ Last ${ids.length} IDs:\n${ids.join("\n")}` : "Empty.");
       return json({ ok: true });
     }
 
     if (cmd === "/delete") {
       const id = parts[1];
       if (!id) {
-        await tgSend(env, chatId, "Использование: /delete <id>");
+        await tgSend(env, chatId, "Usage: /delete <id>");
         return json({ ok: true });
       }
 
       const card = await dbGetCard(env, id);
       if (!card) {
-        await tgSend(env, chatId, `Не нашёл ID: ${id}`);
+        await tgSend(env, chatId, `Not found: ${id}`);
         return json({ ok: true });
       }
 
-      // удаляем файлы и запись
       await env.BUCKET.delete(card.image_key);
       await env.BUCKET.delete(card.thumb_key);
       await dbDeleteCard(env, id);
 
-      await tgSend(env, chatId, `🗑️ Удалено: ${id}`);
+      await tgSend(env, chatId, `🗑️ Deleted: ${id}`);
       return json({ ok: true });
     }
 
-    // Неизвестная команда админа — покажем меню
-    await tgSend(env, chatId, "Не понял команду.\n\n" + adminHelpText(), adminHelpKeyboard());
+    await tgSend(env, chatId, "Unknown command.\n\n" + adminHelpText(), adminKeyboard());
     return json({ ok: true });
   }
 
-  // Если не админ — игнорируем всё, кроме /myid и /start pick_...
+  // Non-admin: ignore (except /myid and /start pick_)
   if (!isAdmin) return json({ ok: true });
 
-  // Админ прислал документ вместо Photo — подскажем
+  // Admin sent document instead of photo
   if (msg.document) {
-    await tgSend(
-      env,
-      chatId,
-      "Пришли картинку как PHOTO (не как файл/document), тогда появится миниатюра и всё будет красиво.\n\n" +
-        adminHelpText(),
-      adminHelpKeyboard()
-    );
+    await tgSend(env, chatId, "Please send as Photo (not as file/document).", adminKeyboard());
     return json({ ok: true });
   }
 
-  // Добавление открытки: админ прислал фото
+  // Admin sends a photo => add postcard
   const photos = msg.photo;
   if (!Array.isArray(photos) || photos.length === 0) {
-    // ничего полезного — покажем меню
-    await tgSend(env, chatId, adminHelpText(), adminHelpKeyboard());
+    await tgSend(env, chatId, adminHelpText(), adminKeyboard());
     return json({ ok: true });
   }
 
   try {
-    const large = photos[photos.length - 1]; // самый большой
-    const thumbSrc = photos[Math.max(0, Math.floor((photos.length - 1) / 2))]; // средний
+    const large = photos[photos.length - 1];
+    const mid = photos[Math.max(0, Math.floor((photos.length - 1) / 2))];
 
     const id = makeId(6);
     const fullKey = `cards/${id}/full.jpg`;
     const thumbKey = `cards/${id}/thumb.jpg`;
 
     const fullUrl = await tgGetFileUrl(env, large.file_id);
-    const thumbUrl = await tgGetFileUrl(env, thumbSrc.file_id);
+    const thumbUrl = await tgGetFileUrl(env, mid.file_id);
 
     const fullBuf = await (await fetch(fullUrl)).arrayBuffer();
     const thumbBuf = await (await fetch(thumbUrl)).arrayBuffer();
@@ -281,24 +378,17 @@ async function handleTelegram(request, env) {
     await env.BUCKET.put(fullKey, fullBuf, { httpMetadata: { contentType: "image/jpeg" } });
     await env.BUCKET.put(thumbKey, thumbBuf, { httpMetadata: { contentType: "image/jpeg" } });
 
-    await dbInsertCard(env, {
-      id,
-      createdAt: Date.now(),
-      imageKey: fullKey,
-      thumbKey: thumbKey,
-    });
+    await dbInsertCard(env, { id, createdAt: Date.now(), imageKey: fullKey, thumbKey });
 
     await tgSend(
       env,
       chatId,
-      `✅ Добавлено: ${id}\n` +
-        `Витрина: https://subach.uk/#${id}\n` +
-        `Удалить: /delete ${id}`,
-      adminHelpKeyboard()
+      `✅ Added: ${id}\nGallery: https://subach.uk/#${id}\nDelete: /delete ${id}`,
+      adminKeyboard()
     );
   } catch (e) {
     console.log("upload error", e);
-    await tgSend(env, chatId, "❌ Ошибка при добавлении. Посмотри логи wrangler tail.");
+    await tgSend(env, chatId, "❌ Upload failed. Check: npx wrangler tail");
   }
 
   return json({ ok: true });
@@ -342,6 +432,7 @@ export default {
 
     if (url.pathname === "/tg") return handleTelegram(request, env);
     if (url.pathname === "/api/cards") return listCards(env, url);
+    if (url.pathname === "/api/request") return handleWebRequest(request, env);
 
     const img = url.pathname.match(/^\/img\/([0-9a-z]+)\.jpg$/i);
     if (img) {
@@ -359,7 +450,7 @@ export default {
       return serveImage(env, card.thumb_key);
     }
 
-    // отдаём статику из public/
+    // Static assets from public/
     return env.ASSETS.fetch(request);
   },
 };
