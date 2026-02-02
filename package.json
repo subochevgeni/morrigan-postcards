@@ -1,0 +1,27 @@
+{
+  "name": "hello",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/subochevgeni/Hello.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/subochevgeni/Hello/issues"
+  },
+  "homepage": "https://github.com/subochevgeni/Hello#readme",
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20260131.0",
+    "happy-dom": "^20.4.0",
+    "vitest": "^4.0.18"
+  }
+}
