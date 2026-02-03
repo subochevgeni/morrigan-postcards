@@ -35,40 +35,20 @@ const reqStatus = $('reqStatus');
 const reqSubmit = $('reqSubmit');
 
 let items = [];
-let tsWidgetId = null;
 let currentId = null;
-
-function ensureTurnstileRendered() {
-  // Turnstile script loads async; render when available
-  if (!window.turnstile) return false;
-  if (tsWidgetId !== null) return true;
-
-  tsWidgetId = window.turnstile.render('#tsWidget', {
-    sitekey: TURNSTILE_SITE_KEY,
-    theme: 'dark',
-  });
-  return true;
-}
 
 function resetTurnstile() {
   try {
-    if (window.turnstile && tsWidgetId !== null) {
-      window.turnstile.reset(tsWidgetId);
+    if (window.turnstile) {
+      // Reset all auto-rendered widgets
+      window.turnstile.reset();
     }
-  } catch (e) {
-    /* ignore */
-  }
+  } catch (e) { /* ignore */ }
 }
 
 function getTurnstileToken() {
-  try {
-    if (window.turnstile && tsWidgetId !== null) {
-      return String(window.turnstile.getResponse(tsWidgetId) || '').trim();
-    }
-  } catch (e) {
-    /* ignore */
-  }
-  return '';
+  const el = document.querySelector('[name="cf-turnstile-response"]');
+  return el ? String(el.value || '').trim() : '';
 }
 
 function openModal(item) {
@@ -93,17 +73,11 @@ function openModal(item) {
   reqMsg.value = '';
   reqWebsite.value = '';
 
-  // Render Turnstile (retry a few times if script not ready yet)
-  let tries = 0;
-  const timer = setInterval(() => {
-    tries += 1;
-    if (ensureTurnstileRendered()) {
-      clearInterval(timer);
-      setTimeout(resetTurnstile, 150);
-    } else if (tries >= 20) {
-      clearInterval(timer);
-      reqStatus.textContent = '❌ Anti-spam widget failed to load. Please refresh the page.';
-    }
+  // Attempt to reset Turnstile (auto-rendered in DOM)
+  setTimeout(() => {
+    try {
+      if (window.turnstile) resetTurnstile();
+    } catch (e) { /* ignore */ }
   }, 150);
 
   location.hash = item.id;
@@ -175,11 +149,6 @@ form.addEventListener('submit', async (e) => {
     return;
   }
 
-  // Ensure Turnstile is ready
-  if (!ensureTurnstileRendered()) {
-    reqStatus.textContent = '⏳ Loading anti-spam… please wait a moment.';
-    return;
-  }
 
   const token = getTurnstileToken();
   if (!token) {
@@ -231,5 +200,15 @@ form.addEventListener('submit', async (e) => {
 
 (async () => {
   await fetchConfig();
+
+  if (!TURNSTILE_SITE_KEY) {
+    // fallback to Cloudflare test key when no real key is configured
+    TURNSTILE_SITE_KEY = '1x00000000000000000000AA';
+    console.warn('Using Turnstile test key; configure TURNSTILE_SITE_KEY in production.');
+  }
+
+  const tsEl = document.querySelector('.cf-turnstile');
+  if (tsEl) tsEl.setAttribute('data-sitekey', TURNSTILE_SITE_KEY);
+
   load();
 })();

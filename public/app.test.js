@@ -12,7 +12,7 @@ describe('Request form submission', () => {
           <input id="reqName" />
           <textarea id="reqMsg"></textarea>
           <input id="reqWebsite" style="display:none" />
-          <div id="tsWidget"></div>
+          <div class="cf-turnstile" data-sitekey="" data-theme="dark"></div>
           <button id="reqSubmit" type="submit">Send</button>
           <div id="reqStatus"></div>
         </form>
