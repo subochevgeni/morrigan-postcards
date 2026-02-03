@@ -1,26 +1,38 @@
-const BOT_USERNAME = "postcardsubot";
+const BOT_USERNAME = 'postcardsubot';
 
-// ✅ PASTE Turnstile Site Key (NOT secret) here
-const TURNSTILE_SITE_KEY = "0x4AAAAAACW5TtAmWWLLFZ7V";
+let TURNSTILE_SITE_KEY = ''; // fetched from /api/config (public site key)
+let SITE_URL = 'https://subach.uk';
+
+async function fetchConfig() {
+  try {
+    const r = await fetch('/api/config');
+    if (!r.ok) return;
+    const d = await r.json().catch(() => ({}));
+    TURNSTILE_SITE_KEY = d.turnstileSiteKey || '';
+    SITE_URL = d.siteUrl || SITE_URL;
+  } catch (e) {
+    /* ignore */
+  }
+}
 
 const $ = (id) => document.getElementById(id);
 
-const grid = $("grid");
-const q = $("q");
+const grid = $('grid');
+const q = $('q');
 
-const modal = $("modal");
-const closeBtn = $("close");
-const modalImg = $("modalImg");
-const modalId = $("modalId");
-const copyBtn = $("copy");
-const tgLink = $("tg");
+const modal = $('modal');
+const closeBtn = $('close');
+const modalImg = $('modalImg');
+const modalId = $('modalId');
+const copyBtn = $('copy');
+const tgLink = $('tg');
 
-const form = $("reqForm");
-const reqName = $("reqName");
-const reqMsg = $("reqMsg");
-const reqWebsite = $("reqWebsite");
-const reqStatus = $("reqStatus");
-const reqSubmit = $("reqSubmit");
+const form = $('reqForm');
+const reqName = $('reqName');
+const reqMsg = $('reqMsg');
+const reqWebsite = $('reqWebsite');
+const reqStatus = $('reqStatus');
+const reqSubmit = $('reqSubmit');
 
 let items = [];
 let tsWidgetId = null;
@@ -31,9 +43,9 @@ function ensureTurnstileRendered() {
   if (!window.turnstile) return false;
   if (tsWidgetId !== null) return true;
 
-  tsWidgetId = window.turnstile.render("#tsWidget", {
+  tsWidgetId = window.turnstile.render('#tsWidget', {
     sitekey: TURNSTILE_SITE_KEY,
-    theme: "dark",
+    theme: 'dark',
   });
   return true;
 }
@@ -43,23 +55,27 @@ function resetTurnstile() {
     if (window.turnstile && tsWidgetId !== null) {
       window.turnstile.reset(tsWidgetId);
     }
-  } catch {}
+  } catch (e) {
+    /* ignore */
+  }
 }
 
 function getTurnstileToken() {
   try {
     if (window.turnstile && tsWidgetId !== null) {
-      return String(window.turnstile.getResponse(tsWidgetId) || "").trim();
+      return String(window.turnstile.getResponse(tsWidgetId) || '').trim();
     }
-  } catch {}
-  return "";
+  } catch (e) {
+    /* ignore */
+  }
+  return '';
 }
 
 function openModal(item) {
   currentId = item.id;
 
-  modal.classList.remove("hidden");
-  modal.setAttribute("aria-hidden", "false");
+  modal.classList.remove('hidden');
+  modal.setAttribute('aria-hidden', 'false');
 
   modalImg.src = item.imageUrl;
   modalId.textContent = item.id;
@@ -67,15 +83,15 @@ function openModal(item) {
 
   copyBtn.onclick = async () => {
     await navigator.clipboard.writeText(item.id);
-    copyBtn.textContent = "Copied!";
-    setTimeout(() => (copyBtn.textContent = "Copy ID"), 900);
+    copyBtn.textContent = 'Copied!';
+    setTimeout(() => (copyBtn.textContent = 'Copy ID'), 900);
   };
 
   // Reset form
-  reqStatus.textContent = "";
-  reqName.value = "";
-  reqMsg.value = "";
-  reqWebsite.value = "";
+  reqStatus.textContent = '';
+  reqName.value = '';
+  reqMsg.value = '';
+  reqWebsite.value = '';
 
   // Render Turnstile (retry a few times if script not ready yet)
   let tries = 0;
@@ -86,7 +102,7 @@ function openModal(item) {
       setTimeout(resetTurnstile, 150);
     } else if (tries >= 20) {
       clearInterval(timer);
-      reqStatus.textContent = "❌ Anti-spam widget failed to load. Please refresh the page.";
+      reqStatus.textContent = '❌ Anti-spam widget failed to load. Please refresh the page.';
     }
   }, 150);
 
@@ -94,27 +110,31 @@ function openModal(item) {
 }
 
 function closeModal() {
-  modal.classList.add("hidden");
-  modal.setAttribute("aria-hidden", "true");
-  modalImg.src = "";
+  modal.classList.add('hidden');
+  modal.setAttribute('aria-hidden', 'true');
+  modalImg.src = '';
   currentId = null;
-  if (location.hash) history.replaceState(null, "", location.pathname + location.search);
+  if (location.hash) history.replaceState(null, '', location.pathname + location.search);
 }
 
 closeBtn.onclick = closeModal;
-modal.onclick = (e) => { if (e.target === modal) closeModal(); };
-window.addEventListener("keydown", (e) => { if (e.key === "Escape") closeModal(); });
+modal.onclick = (e) => {
+  if (e.target === modal) closeModal();
+};
+window.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') closeModal();
+});
 
 function render() {
-  const needle = (q.value || "").trim().toLowerCase();
-  const filtered = needle ? items.filter(x => x.id.includes(needle)) : items;
+  const needle = (q.value || '').trim().toLowerCase();
+  const filtered = needle ? items.filter((x) => x.id.includes(needle)) : items;
 
-  grid.innerHTML = "";
+  grid.innerHTML = '';
   for (const item of filtered) {
-    const card = document.createElement("button");
-    card.className = "card";
+    const card = document.createElement('button');
+    card.className = 'card';
     card.innerHTML = `
-      <img src="${item.thumbUrl}" alt="${item.id}">
+      <img src="${item.thumbUrl}" alt="${item.id}" loading="lazy">
       <div class="meta">ID: <span class="mono">${item.id}</span></div>
     `;
     card.onclick = () => openModal(item);
@@ -123,27 +143,27 @@ function render() {
 }
 
 async function load() {
-  const r = await fetch("/api/cards?limit=200");
+  const r = await fetch('/api/cards?limit=200');
   const data = await r.json();
   items = data.items || [];
   render();
 
-  const hashId = (location.hash || "").replace("#", "").trim();
+  const hashId = (location.hash || '').replace('#', '').trim();
   if (hashId) {
-    const found = items.find(x => x.id === hashId);
+    const found = items.find((x) => x.id === hashId);
     if (found) openModal(found);
   }
 }
 
 q.oninput = render;
 
-form.addEventListener("submit", async (e) => {
+form.addEventListener('submit', async (e) => {
   e.preventDefault();
 
-  reqStatus.textContent = "";
+  reqStatus.textContent = '';
 
   if (!currentId) {
-    reqStatus.textContent = "❌ Please select a postcard first.";
+    reqStatus.textContent = '❌ Please select a postcard first.';
     return;
   }
 
@@ -151,19 +171,19 @@ form.addEventListener("submit", async (e) => {
   const message = reqMsg.value.trim();
 
   if (!name) {
-    reqStatus.textContent = "❌ Please enter your nickname / handle.";
+    reqStatus.textContent = '❌ Please enter your nickname / handle.';
     return;
   }
 
   // Ensure Turnstile is ready
   if (!ensureTurnstileRendered()) {
-    reqStatus.textContent = "⏳ Loading anti-spam… please wait a moment.";
+    reqStatus.textContent = '⏳ Loading anti-spam… please wait a moment.';
     return;
   }
 
   const token = getTurnstileToken();
   if (!token) {
-    reqStatus.textContent = "❌ Please complete the anti-spam check.";
+    reqStatus.textContent = '❌ Please complete the anti-spam check (Turnstile).';
     return;
   }
 
@@ -172,41 +192,44 @@ form.addEventListener("submit", async (e) => {
     name,
     message,
     website: reqWebsite.value.trim(), // honeypot
-    turnstileToken: token
+    turnstileToken: token,
   };
 
   reqSubmit.disabled = true;
-  reqStatus.textContent = "Sending…";
+  reqStatus.textContent = 'Sending…';
 
   try {
-    const r = await fetch("/api/request", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
+    const r = await fetch('/api/request', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
       body: JSON.stringify(payload),
     });
 
     if (r.ok) {
-      reqStatus.textContent = "✅ Sent! The owners received your request in Telegram.";
+      reqStatus.textContent = '✅ Sent! The owners received your request in Telegram.';
       setTimeout(() => {
         resetTurnstile();
       }, 200);
     } else if (r.status === 404) {
-      reqStatus.textContent = "❌ Sorry — this postcard is no longer available.";
+      reqStatus.textContent = '❌ Sorry — this postcard is no longer available.';
       setTimeout(resetTurnstile, 200);
     } else if (r.status === 403) {
-      reqStatus.textContent = "❌ Anti-spam failed. Please retry.";
+      reqStatus.textContent = '❌ Anti-spam failed. Please retry.';
       setTimeout(resetTurnstile, 200);
     } else {
-      const t = await r.text().catch(() => "");
-      reqStatus.textContent = "❌ Failed to send. " + (t ? `(${t})` : "Please try again.");
+      const t = await r.text().catch(() => '');
+      reqStatus.textContent = '❌ Failed to send. ' + (t ? `(${t})` : 'Please try again.');
       setTimeout(resetTurnstile, 200);
     }
   } catch {
-    reqStatus.textContent = "❌ Network error. Please try again.";
+    reqStatus.textContent = '❌ Network error. Please try again.';
     setTimeout(resetTurnstile, 200);
   } finally {
     reqSubmit.disabled = false;
   }
 });
 
-load();
+(async () => {
+  await fetchConfig();
+  load();
+})();

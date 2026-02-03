@@ -21,7 +21,7 @@ describe('Request form submission', () => {
 
     // Mock fetch
     global.fetch = vi.fn();
-    
+
     // Mock Turnstile
     window.turnstile = {
       reset: vi.fn(),
@@ -67,11 +67,11 @@ describe('Request form submission', () => {
       name,
       message,
       website: reqWebsite.value.trim(),
-      turnstileToken: token
+      turnstileToken: token,
     };
 
     reqSubmit.disabled = true;
-    reqStatus.textContent = "Sending…";
+    reqStatus.textContent = 'Sending…';
 
     const r = await fetch('/api/request', {
       method: 'POST',
@@ -80,7 +80,7 @@ describe('Request form submission', () => {
     });
 
     if (r.ok) {
-      reqStatus.textContent = '✅ Sent! The owner got your request in Telegram.';
+      reqStatus.textContent = '✅ Sent! The owners received your request in Telegram.';
       form.classList.add('hidden');
       window.turnstile.reset();
     }
@@ -101,7 +101,7 @@ describe('Request form submission', () => {
     });
 
     // Verify UI updates
-    expect(reqStatus.textContent).toBe('✅ Sent! The owner got your request in Telegram.');
+    expect(reqStatus.textContent).toBe('✅ Sent! The owners received your request in Telegram.');
     expect(form.classList.contains('hidden')).toBe(true);
     expect(window.turnstile.reset).toHaveBeenCalled();
   });
@@ -122,7 +122,6 @@ describe('Request form submission', () => {
 
     // Simulate validation logic (from app.js lines 135-138)
     const name = reqName.value.trim();
-    const token = tokenInput.value;
 
     if (!name) {
       reqStatus.textContent = '❌ Please enter your nickname / handle.';
@@ -149,7 +148,7 @@ describe('Request form submission', () => {
       return;
     }
     if (!token) {
-      reqStatus.textContent = '❌ Please complete the anti-spam check.';
+      reqStatus.textContent = '❌ Please complete the anti-spam check (Turnstile).';
       return;
     }
 
@@ -181,7 +180,7 @@ describe('Request form submission', () => {
 
     // Simulate form submission with 404 response (from app.js lines 166-168)
     reqSubmit.disabled = true;
-    reqStatus.textContent = "Sending…";
+    reqStatus.textContent = 'Sending…';
 
     const r = await fetch('/api/request', {
       method: 'POST',
@@ -231,7 +230,7 @@ describe('Request form submission', () => {
 
     // Simulate form submission with 403 response (from app.js lines 169-172)
     reqSubmit.disabled = true;
-    reqStatus.textContent = "Sending…";
+    reqStatus.textContent = 'Sending…';
 
     const r = await fetch('/api/request', {
       method: 'POST',
@@ -258,7 +257,6 @@ describe('Request form submission', () => {
   });
 
   it('resets Turnstile widget when request form is opened', async () => {
-    const openFormBtn = document.getElementById('openForm');
     const form = document.getElementById('reqForm');
     const reqStatus = document.getElementById('reqStatus');
 
@@ -268,12 +266,14 @@ describe('Request form submission', () => {
     // Simulate opening the form (from app.js lines 60-64)
     form.classList.toggle('hidden');
     reqStatus.textContent = '';
-    
+
     // Use setTimeout to match actual implementation behavior
-    await new Promise(resolve => setTimeout(() => {
-      window.turnstile.reset();
-      resolve();
-    }, 250));
+    await new Promise((resolve) =>
+      setTimeout(() => {
+        window.turnstile.reset();
+        resolve();
+      }, 250)
+    );
 
     // Verify Turnstile was reset
     expect(window.turnstile.reset).toHaveBeenCalled();
@@ -306,7 +306,7 @@ describe('Request form submission', () => {
 
     // Simulate successful form submission (from app.js lines 149-152)
     reqSubmit.disabled = true;
-    reqStatus.textContent = "Sending…";
+    reqStatus.textContent = 'Sending…';
 
     const r = await fetch('/api/request', {
       method: 'POST',
@@ -324,10 +324,12 @@ describe('Request form submission', () => {
       reqStatus.textContent = '✅ Sent! The owners received your request in Telegram.';
       form.classList.add('hidden');
       // Simulate setTimeout resetTurnstile call
-      await new Promise(resolve => setTimeout(() => {
-        window.turnstile.reset();
-        resolve();
-      }, 250));
+      await new Promise((resolve) =>
+        setTimeout(() => {
+          window.turnstile.reset();
+          resolve();
+        }, 250)
+      );
     }
 
     reqSubmit.disabled = false;
@@ -364,7 +366,7 @@ describe('Request form submission', () => {
 
     // Simulate failed form submission (from app.js lines 159-161)
     reqSubmit.disabled = true;
-    reqStatus.textContent = "Sending…";
+    reqStatus.textContent = 'Sending…';
 
     const r = await fetch('/api/request', {
       method: 'POST',
@@ -381,10 +383,12 @@ describe('Request form submission', () => {
     if (!r.ok && r.status !== 404 && r.status !== 403) {
       reqStatus.textContent = '❌ Failed to send. Please try again.';
       // Simulate setTimeout resetTurnstile call
-      await new Promise(resolve => setTimeout(() => {
-        window.turnstile.reset();
-        resolve();
-      }, 250));
+      await new Promise((resolve) =>
+        setTimeout(() => {
+          window.turnstile.reset();
+          resolve();
+        }, 250)
+      );
     }
 
     reqSubmit.disabled = false;
@@ -398,13 +402,12 @@ describe('Request form submission', () => {
     const modalId = document.getElementById('modalId');
     const reqName = document.getElementById('reqName');
     const reqStatus = document.getElementById('reqStatus');
-    const form = document.getElementById('reqForm');
 
     modalId.textContent = 'test123';
     reqName.value = 'John Doe';
 
     // Do NOT add Turnstile token input (simulating missing token)
-    
+
     // Simulate validation logic (from app.js lines 120, 126-128)
     const name = reqName.value.trim();
     const tokenEl = document.querySelector('[name="cf-turnstile-response"]');

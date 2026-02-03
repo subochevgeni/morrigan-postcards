@@ -6,70 +6,74 @@ function createHandleWebRequest(fetchMock) {
   const json = (obj, status = 200) =>
     new Response(JSON.stringify(obj), {
       status,
-      headers: { "content-type": "application/json; charset=utf-8" },
+      headers: { 'content-type': 'application/json; charset=utf-8' },
     });
 
   const text = (s, status = 200) => new Response(s, { status });
 
   async function verifyTurnstile(request, env, token) {
     const form = new URLSearchParams();
-    form.set("secret", env.TURNSTILE_SECRET_KEY);
-    form.set("response", token);
+    form.set('secret', env.TURNSTILE_SECRET_KEY);
+    form.set('response', token);
 
-    const ip = request.headers.get("CF-Connecting-IP");
-    if (ip) form.set("remoteip", ip);
+    const ip = request.headers.get('CF-Connecting-IP');
+    if (ip) form.set('remoteip', ip);
 
-    const r = await fetchMock("https://challenges.cloudflare.com/turnstile/v0/siteverify", {
-      method: "POST",
-      headers: { "content-type": "application/x-www-form-urlencoded" },
+    const r = await fetchMock('https://challenges.cloudflare.com/turnstile/v0/siteverify', {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
       body: form.toString(),
     });
 
     const data = await r.json().catch(() => null);
     if (!data?.success) return { ok: false, data };
 
-    if (data.hostname && !String(data.hostname).endsWith("subach.uk")) {
-      return { ok: false, data: { ...data, reason: "bad-hostname" } };
+    if (data.hostname && !String(data.hostname).endsWith('subach.uk')) {
+      return { ok: false, data: { ...data, reason: 'bad-hostname' } };
     }
 
     return { ok: true, data };
   }
 
   async function handleWebRequest(request, env) {
-    if (request.method !== "POST") return text("method not allowed", 405);
+    if (request.method !== 'POST') return text('method not allowed', 405);
 
     let body;
     try {
       body = await request.json();
     } catch {
-      return text("bad json", 400);
+      return text('bad json', 400);
     }
 
     // Honeypot
-    if (String(body?.website || "").trim()) return json({ ok: true });
+    if (String(body?.website || '').trim()) return json({ ok: true });
 
-    const postcardId = String(body?.id || "").trim().toLowerCase();
-    const name = String(body?.name || "").trim().slice(0, 80);
-    const message = String(body?.message || "").trim().slice(0, 600);
-    const token = String(body?.turnstileToken || "").trim();
+    const postcardId = String(body?.id || '')
+      .trim()
+      .toLowerCase();
+    const name = String(body?.name || '')
+      .trim()
+      .slice(0, 80);
+    const message = String(body?.message || '')
+      .trim()
+      .slice(0, 600);
+    const token = String(body?.turnstileToken || '').trim();
 
-    if (!/^[0-9a-z]{4,12}$/i.test(postcardId)) return text("bad id", 400);
-    if (!name) return text("name required", 400);
-    if (!token) return text("turnstile required", 403);
+    if (!/^[0-9a-z]{4,12}$/i.test(postcardId)) return text('bad id', 400);
+    if (!name) return text('name required', 400);
+    if (!token) return text('turnstile required', 403);
 
     const ts = await verifyTurnstile(request, env, token);
-    if (!ts.ok) return text("turnstile failed", 403);
+    if (!ts.ok) return text('turnstile failed', 403);
 
-    const card = await env.DB.prepare(
-      "SELECT id FROM cards WHERE id=?1 AND status='available'"
-    )
+    const card = await env.DB.prepare("SELECT id FROM cards WHERE id=?1 AND status='available'")
       .bind(postcardId)
       .first();
 
-    if (!card) return text("not found", 404);
+    if (!card) return text('not found', 404);
 
     await env.DB.prepare(
-      "INSERT INTO requests (postcard_id, name, message, created_at) VALUES (?1, ?2, ?3, ?4)"
+      'INSERT INTO requests (postcard_id, name, message, created_at) VALUES (?1, ?2, ?3, ?4)'
     )
       .bind(postcardId, name, message || null, Date.now())
       .run();
@@ -111,12 +115,10 @@ describe('handleWebRequest', () => {
     // Mock DB card lookup - card exists and is available
     const mockFirst = vi.fn().mockResolvedValueOnce({ id: 'abc123' });
     const mockBind = vi.fn().mockReturnValue({ first: mockFirst });
-    const mockPrepare = vi.fn().mockReturnValue({ bind: mockBind });
 
     // Mock DB insert
     const mockRun = vi.fn().mockResolvedValueOnce({});
     const mockInsertBind = vi.fn().mockReturnValue({ run: mockRun });
-    const mockInsertPrepare = vi.fn().mockReturnValue({ bind: mockInsertBind });
 
     mockDB.prepare
       .mockReturnValueOnce({ bind: mockBind }) // First call for SELECT

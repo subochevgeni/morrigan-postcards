@@ -1,67 +1,81 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Postcards — subach.uk</title>
-  <link rel="stylesheet" href="/style.css" />
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Postcards — subach.uk</title>
+    <link rel="stylesheet" href="/style.css" />
 
-  <!-- Turnstile explicit render -->
-  <script src="https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit" async defer></script>
-</head>
-<body>
-  <header class="top">
-    <div>
-      <div class="title">Postcards</div>
-      <div class="sub">Pick a postcard. First come, first served. No reservations.</div>
-    </div>
-    <input id="q" class="search" placeholder="Search by ID…" />
-  </header>
-
-  <main>
-    <div id="grid" class="grid"></div>
-  </main>
-
-  <div id="modal" class="modal hidden" aria-hidden="true">
-    <div class="modal-inner">
-      <button id="close" class="close" aria-label="Close">×</button>
-
-      <img id="modalImg" class="big" alt="" />
-
-      <div class="bar">
-        <div>ID: <span id="modalId" class="mono"></span></div>
-
-        <div class="actions">
-          <button id="copy" class="btn">Copy ID</button>
-          <a id="tg" class="btn primary" target="_blank" rel="noreferrer">Message on Telegram</a>
-        </div>
+    <!-- Turnstile explicit render -->
+    <script
+      src="https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit"
+      async
+      defer
+    ></script>
+  </head>
+  <body>
+    <header class="top">
+      <div>
+        <div class="title">Postcards</div>
+        <div class="sub">Pick a postcard. First come, first served. No reservations.</div>
       </div>
+      <input id="q" class="search" placeholder="Search by ID…" />
+    </header>
 
-      <!-- Request form is ALWAYS visible (so the button never "disappears") -->
-      <form id="reqForm" class="form">
-        <div class="formTitle">No Telegram? Send a request</div>
+    <main>
+      <div id="grid" class="grid"></div>
+    </main>
 
-        <input id="reqName" placeholder="Your nickname / handle (e.g. Postcrossing username)" required />
-        <textarea id="reqMsg" placeholder="Message (optional)"></textarea>
+    <div id="modal" class="modal hidden" aria-hidden="true">
+      <div class="modal-inner">
+        <button id="close" class="close" aria-label="Close">×</button>
 
-        <div class="tsRow">
-          <div id="tsWidget"></div>
-          <div class="tsHint">Anti-spam check is required.</div>
+        <img id="modalImg" class="big" alt="" />
+
+        <div class="bar">
+          <div>ID: <span id="modalId" class="mono"></span></div>
+
+          <div class="actions">
+            <button id="copy" class="btn">Copy ID</button>
+            <a id="tg" class="btn primary" target="_blank" rel="noreferrer">Message on Telegram</a>
+          </div>
         </div>
 
-        <!-- honeypot -->
-        <input id="reqWebsite" class="hp" autocomplete="off" tabindex="-1" placeholder="Website" />
+        <!-- Request form is ALWAYS visible (so the button never "disappears") -->
+        <form id="reqForm" class="form">
+          <div class="formTitle">No Telegram? Send a request</div>
 
-        <button id="reqSubmit" class="btn primary" type="submit">Send request</button>
-        <div id="reqStatus" class="status"></div>
+          <input
+            id="reqName"
+            placeholder="Your nickname / handle (e.g. Postcrossing username)"
+            required
+          />
+          <textarea id="reqMsg" placeholder="Message (optional)"></textarea>
 
-        <div class="hint">
-          Tip: include a username you can be reached at (Postcrossing / Instagram / Discord).
-        </div>
-      </form>
+          <div class="tsRow">
+            <div id="tsWidget"></div>
+            <div class="tsHint">Anti-spam check is required.</div>
+          </div>
+
+          <!-- honeypot -->
+          <input
+            id="reqWebsite"
+            class="hp"
+            autocomplete="off"
+            tabindex="-1"
+            placeholder="Website"
+          />
+
+          <button id="reqSubmit" class="btn primary" type="submit">Send request</button>
+          <div id="reqStatus" class="status"></div>
+
+          <div class="hint">
+            Tip: include a username you can be reached at (Postcrossing / Instagram / Discord).
+          </div>
+        </form>
+      </div>
     </div>
-  </div>
 
-  <script src="/app.js"></script>
-</body>
+    <script src="/app.js"></script>
+  </body>
 </html>
