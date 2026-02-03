@@ -1,7 +1,7 @@
 const BOT_USERNAME = "postcardsubot";
 
 // ✅ PASTE Turnstile Site Key (NOT secret) here
-const TURNSTILE_SITE_KEY = "PASTE_YOUR_TURNSTILE_SITE_KEY_HERE";
+const TURNSTILE_SITE_KEY = "0x4AAAAAACW5TtAmWWLLFZ7V";
 
 const $ = (id) => document.getElementById(id);
 
