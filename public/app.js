@@ -23,6 +23,7 @@ const $ = (id) => document.getElementById(id);
 const grid = $('grid');
 const q = $('q');
 const categoryFilterEl = $('categoryFilter');
+const selectionSummaryEl = $('selectionSummary');
 
 let categories = [];
 let currentCategory = '';
@@ -51,6 +52,14 @@ let items = [];
 let currentId = null;
 let cartIds = [];
 let modalMode = 'single';
+
+function updateSelectionSummary(filteredCount = null) {
+  if (!selectionSummaryEl) return;
+  const visible = filteredCount == null ? items.length : filteredCount;
+  const suffix = visible === 1 ? '' : 's';
+  const pickedSuffix = cartIds.length === 1 ? '' : 's';
+  selectionSummaryEl.textContent = `${visible} postcard${suffix} shown · ${cartIds.length} selected postcard${pickedSuffix}`;
+}
 
 function resetTurnstile() {
   try {
@@ -107,14 +116,16 @@ function toggleCart(id, e) {
 
 function updateCartUI() {
   if (cartBtn && cartCountEl) {
-    if (cartIds.length > 0) {
-      cartBtn.classList.remove('hidden');
-      cartCountEl.textContent = cartIds.length;
-    } else {
-      cartBtn.classList.add('hidden');
-      cartCountEl.textContent = '0';
-    }
+    cartCountEl.textContent = String(cartIds.length);
+    cartBtn.disabled = cartIds.length === 0;
+    cartBtn.setAttribute(
+      'aria-label',
+      cartIds.length === 0
+        ? 'No postcards selected yet'
+        : `Open selected postcards (${cartIds.length})`
+    );
   }
+  updateSelectionSummary();
 }
 
 function renderCartModalContent() {
@@ -175,6 +186,16 @@ function render() {
   const filtered = needle ? items.filter((x) => x.id.includes(needle)) : items;
 
   grid.innerHTML = '';
+  if (filtered.length === 0) {
+    const empty = document.createElement('div');
+    empty.className = 'empty-state';
+    empty.innerHTML =
+      '<strong>No postcards found.</strong><span>Try another ID fragment or clear search/filter.</span>';
+    grid.appendChild(empty);
+    updateSelectionSummary(0);
+    return;
+  }
+
   for (const item of filtered) {
     const card = document.createElement('button');
     card.className = 'card';
@@ -194,6 +215,8 @@ function render() {
     if (cartBtnEl) cartBtnEl.onclick = (e) => toggleCart(item.id, e);
     grid.appendChild(card);
   }
+
+  updateSelectionSummary(filtered.length);
 }
 
 function renderCategoryFilter() {
@@ -236,6 +259,7 @@ async function load() {
     }
     const data = await r.json();
     items = data.items || [];
+    updateSelectionSummary(items.length);
     render();
 
     const hashId = (location.hash || '').replace('#', '').trim();
@@ -370,5 +394,6 @@ form.addEventListener('submit', async (e) => {
   }
 
   await loadCategories();
+  updateCartUI();
   load();
 })();

@@ -3,7 +3,13 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Postcards — subach.uk</title>
+    <title>Morrigan Postcard Exchange</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@500&family=Space+Grotesk:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
     <link rel="stylesheet" href="/style.css" />
 
     <!-- Turnstile explicit render -->
@@ -15,21 +21,43 @@
   </head>
   <body>
     <header class="top">
-      <div>
-        <div class="title">Postcards</div>
-        <div class="sub">Pick a postcard. First come, first served. No reservations.</div>
+      <div class="brand-copy">
+        <div class="eyebrow">MORRIGAN POSTCARD EXCHANGE</div>
+        <h1 class="title">Welcome to Morrigan's postcard exchange portal.</h1>
+        <div class="sub">
+          We are happy to see you here. Please choose postcards you like and send an
+          exchange request.
+        </div>
+        <div class="hero-steps" role="list" aria-label="How it works">
+          <span role="listitem" class="step-chip">1. Browse postcards</span>
+          <span role="listitem" class="step-chip">2. Add favorites to cart</span>
+          <span role="listitem" class="step-chip">3. Send exchange request</span>
+        </div>
       </div>
       <div class="top-actions">
-        <button type="button" id="cartBtn" class="cart-btn hidden" aria-label="Open cart">
-          <span class="cart-btn-label">Cart</span> (<span id="cartCount">0</span>)
-        </button>
         <label for="q" class="sr-only">Search postcards by ID</label>
-        <input id="q" class="search" placeholder="Search by ID…" aria-label="Search postcards by ID" />
+        <input
+          id="q"
+          class="search"
+          placeholder="Search postcards by ID..."
+          aria-label="Search postcards by ID"
+        />
+        <button type="button" id="cartBtn" class="cart-btn" aria-label="Open selected postcards">
+          <span class="cart-btn-label">Selected</span> <span id="cartCount">0</span>
+        </button>
       </div>
     </header>
 
     <main>
-      <div id="categoryFilter" class="category-filter" role="group" aria-label="Filter by category"></div>
+      <div class="toolbar">
+        <div id="selectionSummary" class="selection-summary" aria-live="polite"></div>
+        <div
+          id="categoryFilter"
+          class="category-filter"
+          role="group"
+          aria-label="Filter by category"
+        ></div>
+      </div>
       <div id="grid" class="grid"></div>
     </main>
 
@@ -55,7 +83,7 @@
 
         <!-- Request form is ALWAYS visible -->
         <form id="reqForm" class="form">
-          <div class="formTitle">No Telegram? Send a request</div>
+          <div class="formTitle">Send exchange request</div>
 
           <label for="reqName" class="sr-only">Your nickname / handle</label>
           <input
@@ -84,7 +112,7 @@
           <div id="reqStatus" class="status"></div>
 
           <div class="hint">
-            Tip: include a username you can be reached at (Postcrossing / Instagram / Discord).
+            Tip: share where we can contact you (Postcrossing, Instagram, Discord, etc.).
           </div>
         </form>
       </div>
