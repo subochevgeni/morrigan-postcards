@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
+import worker from './worker.js';
 
 // Helper to create handleWebRequest function in a testable way
 function createHandleWebRequest(fetchMock) {
@@ -349,5 +350,221 @@ describe('handleWebRequest', () => {
 
     expect(response.status).toBe(400);
     expect(text).toBe('bad json');
+  });
+});
+
+describe('worker.fetch integration', () => {
+  function createDbMock({
+    availableIds = [],
+    cards = [],
+    insertedRequests = [],
+  } = {}) {
+    const available = new Set(availableIds);
+
+    return {
+      prepare(sql) {
+        return {
+          bind(...args) {
+            if (sql.includes("SELECT id FROM cards WHERE id=?1 AND status='available'")) {
+              const id = args[0];
+              return {
+                first: async () => (available.has(id) ? { id } : null),
+              };
+            }
+
+            if (
+              sql.includes(
+                'INSERT INTO requests (postcard_id, name, message, created_at) VALUES (?1, ?2, ?3, ?4)'
+              )
+            ) {
+              return {
+                run: async () => {
+                  insertedRequests.push({
+                    postcard_id: args[0],
+                    name: args[1],
+                    message: args[2],
+                    created_at: args[3],
+                  });
+                  return {};
+                },
+              };
+            }
+
+            if (
+              sql.includes(
+                "SELECT id, created_at, category FROM cards WHERE status='available' AND category=?1 ORDER BY created_at DESC LIMIT ?2"
+              )
+            ) {
+              const [category, limit] = args;
+              return {
+                all: async () => ({
+                  results: cards
+                    .filter((x) => x.category === category)
+                    .sort((a, b) => b.created_at - a.created_at)
+                    .slice(0, limit),
+                }),
+              };
+            }
+
+            if (
+              sql.includes(
+                "SELECT id, created_at, category FROM cards WHERE status='available' ORDER BY created_at DESC LIMIT ?1"
+              )
+            ) {
+              const [limit] = args;
+              return {
+                all: async () => ({
+                  results: cards.sort((a, b) => b.created_at - a.created_at).slice(0, limit),
+                }),
+              };
+            }
+
+            throw new Error(`Unhandled SQL in test: ${sql}`);
+          },
+        };
+      },
+    };
+  }
+
+  function createEnv({ db, adminChatIds = '1001,1002' } = {}) {
+    return {
+      DB: db || createDbMock(),
+      ADMIN_CHAT_IDS: adminChatIds,
+      TURNSTILE_SECRET_KEY: 'prod-secret',
+      TG_BOT_TOKEN: 'test-bot-token',
+      SITE_URL: 'https://example.com',
+      ASSETS: { fetch: vi.fn() },
+    };
+  }
+
+  it('returns categories list from /api/categories', async () => {
+    const env = createEnv();
+    const response = await worker.fetch(
+      new Request('https://example.com/api/categories', { method: 'GET' }),
+      env
+    );
+    const data = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(Array.isArray(data.categories)).toBe(true);
+    expect(data.categories.length).toBeGreaterThan(0);
+    expect(data.categories).toContainEqual({
+      slug: 'nature',
+      en: 'Nature',
+      ru: 'Природа',
+    });
+  });
+
+  it('filters cards by category in /api/cards', async () => {
+    const db = createDbMock({
+      cards: [
+        { id: 'nature1', created_at: 300, category: 'nature' },
+        { id: 'nature2', created_at: 200, category: 'nature' },
+        { id: 'animals1', created_at: 100, category: 'animals' },
+      ],
+    });
+    const env = createEnv({ db });
+
+    const response = await worker.fetch(
+      new Request('https://example.com/api/cards?limit=10&category=nature'),
+      env
+    );
+    const data = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(data.items).toHaveLength(2);
+    expect(data.items.map((x) => x.id)).toEqual(['nature1', 'nature2']);
+    expect(data.items[0]).toMatchObject({
+      id: 'nature1',
+      category: 'nature',
+      thumbUrl: '/thumb/nature1.jpg',
+      imageUrl: '/img/nature1.jpg',
+    });
+  });
+
+  it('handles cart request with ids and inserts one request row per postcard', async () => {
+    const insertedRequests = [];
+    const db = createDbMock({
+      availableIds: ['abc123', 'def456'],
+      insertedRequests,
+    });
+    const env = createEnv({ db });
+
+    const fetchMock = vi.fn(async (url) => {
+      if (url.includes('/turnstile/v0/siteverify')) {
+        return { json: async () => ({ success: true, hostname: 'example.com' }) };
+      }
+      if (url.includes('/sendMessage')) return { json: async () => ({ ok: true }) };
+      if (url.includes('/sendMediaGroup')) return { json: async () => ({ ok: true }) };
+      if (url.includes('/sendPhoto')) return { json: async () => ({ ok: true }) };
+      throw new Error(`Unexpected fetch URL: ${url}`);
+    });
+    const prevFetch = global.fetch;
+    global.fetch = fetchMock;
+
+    try {
+      const response = await worker.fetch(
+        new Request('https://example.com/api/request', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            ids: ['abc123', 'def456'],
+            name: 'John Doe',
+            message: 'Hello from cart',
+            turnstileToken: 'valid-token',
+          }),
+        }),
+        env
+      );
+      const data = await response.json();
+
+      expect(response.status).toBe(200);
+      expect(data).toEqual({ ok: true });
+      expect(insertedRequests).toHaveLength(2);
+      expect(insertedRequests.map((x) => x.postcard_id)).toEqual(['abc123', 'def456']);
+
+      const sendMediaGroupCalls = fetchMock.mock.calls.filter(([url]) =>
+        String(url).includes('/sendMediaGroup')
+      );
+      expect(sendMediaGroupCalls).toHaveLength(2);
+    } finally {
+      global.fetch = prevFetch;
+    }
+  });
+
+  it('returns 400 for cart request when all ids are invalid', async () => {
+    const db = createDbMock();
+    const env = createEnv({ db });
+
+    const fetchMock = vi.fn(async (url) => {
+      if (url.includes('/turnstile/v0/siteverify')) {
+        return { json: async () => ({ success: true, hostname: 'example.com' }) };
+      }
+      throw new Error(`Unexpected fetch URL: ${url}`);
+    });
+    const prevFetch = global.fetch;
+    global.fetch = fetchMock;
+
+    try {
+      const response = await worker.fetch(
+        new Request('https://example.com/api/request', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            ids: ['***', '!!!'],
+            name: 'John Doe',
+            message: 'Bad ids',
+            turnstileToken: 'valid-token',
+          }),
+        }),
+        env
+      );
+      const text = await response.text();
+
+      expect(response.status).toBe(400);
+      expect(text).toBe('bad id');
+    } finally {
+      global.fetch = prevFetch;
+    }
   });
 });
