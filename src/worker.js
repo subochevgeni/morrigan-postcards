@@ -171,12 +171,11 @@ async function notifyAdminsWithPreviews(env, requestedId, requestText) {
   }
 }
 
-async function verifyTurnstile(request, env, token) {
-  // обязательная серверная валидация токена Turnstile через siteverify. :contentReference[oaicite:7]{index=7}
-  const secret = env.TURNSTILE_SECRET_KEY || '1x0000000000000000000000000000000AA';
+const TURNSTILE_TEST_SECRET = '1x0000000000000000000000000000000AA';
 
+async function verifyTurnstileWithSecret(request, token, secret) {
   const form = new URLSearchParams();
-  form.set("secret", secret);
+  form.set('secret', secret);
   form.set('response', token);
 
   const ip = request.headers.get('CF-Connecting-IP');
@@ -188,11 +187,26 @@ async function verifyTurnstile(request, env, token) {
     body: form.toString(),
   });
 
-  const data = await r.json().catch(() => null);
+  return r.json().catch(() => null);
+}
+
+async function verifyTurnstile(request, env, token) {
+  const secret = env.TURNSTILE_SECRET_KEY || TURNSTILE_TEST_SECRET;
+  const isTestKey = secret === TURNSTILE_TEST_SECRET;
+
+  let data = await verifyTurnstileWithSecret(request, token, secret);
+  let usedTestSecret = isTestKey;
+
+  // Если на бэкенде прод-ключ, а токен с тестового виджета — пробуем тестовый секрет (для локальной разработки).
+  if (!data?.success && !isTestKey && env.TURNSTILE_SECRET_KEY) {
+    data = await verifyTurnstileWithSecret(request, token, TURNSTILE_TEST_SECRET);
+    if (data?.success) usedTestSecret = true;
+  }
+
   if (!data?.success) return { ok: false, data };
 
-  // мягкая проверка hostname (не ломаем, если поле отсутствует)
-  if (data.hostname && !String(data.hostname).endsWith('subach.uk')) {
+  // При тестовом ключе hostname может быть localhost — не проверяем.
+  if (!usedTestSecret && data.hostname && !String(data.hostname).endsWith('subach.uk')) {
     return { ok: false, data: { ...data, reason: 'bad-hostname' } };
   }
 

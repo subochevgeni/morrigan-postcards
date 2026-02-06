@@ -213,9 +213,7 @@ form.addEventListener('submit', async (e) => {
   await fetchConfig();
 
   if (!TURNSTILE_SITE_KEY) {
-    // fallback to Cloudflare test key when no real key is configured
-    TURNSTILE_SITE_KEY = '1x00000000000000000000AA';
-    console.warn('Using Turnstile test key; configure TURNSTILE_SITE_KEY in production.');
+    TURNSTILE_SITE_KEY = '0x4AAAAAACW5TtAmWWLLFZ7V';
   }
 
   const tsEl = document.querySelector('.cf-turnstile');
