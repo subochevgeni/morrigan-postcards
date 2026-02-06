@@ -19,7 +19,8 @@
         <div class="title">Postcards</div>
         <div class="sub">Pick a postcard. First come, first served. No reservations.</div>
       </div>
-      <input id="q" class="search" placeholder="Search by ID…" />
+      <label for="q" class="sr-only">Search postcards by ID</label>
+      <input id="q" class="search" placeholder="Search by ID…" aria-label="Search postcards by ID" />
     </header>
 
     <main>
@@ -30,7 +31,7 @@
       <div class="modal-inner">
         <button id="close" class="close" aria-label="Close">×</button>
 
-        <img id="modalImg" class="big" alt="" />
+        <img id="modalImg" class="big" alt="" aria-describedby="modalId" />
 
         <div class="bar">
           <div>ID: <span id="modalId" class="mono"></span></div>
@@ -45,12 +46,15 @@
         <form id="reqForm" class="form">
           <div class="formTitle">No Telegram? Send a request</div>
 
+          <label for="reqName" class="sr-only">Your nickname / handle</label>
           <input
             id="reqName"
             placeholder="Your nickname / handle (e.g. Postcrossing username)"
             required
+            aria-label="Your nickname or handle"
           />
-          <textarea id="reqMsg" placeholder="Message (optional)"></textarea>
+          <label for="reqMsg" class="sr-only">Message (optional)</label>
+          <textarea id="reqMsg" placeholder="Message (optional)" aria-label="Optional message"></textarea>
 
           <div class="tsRow">
           <div class="cf-turnstile" data-sitekey="" data-theme="dark"></div>
