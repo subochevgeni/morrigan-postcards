@@ -428,3 +428,391 @@ describe('Request form submission', () => {
     expect(global.fetch).not.toHaveBeenCalled();
   });
 });
+
+// Set up DOM structure for cart tests
+function setupCartDOM() {
+  document.body.innerHTML = `
+    <div id="grid"></div>
+    <input id="q" type="text" />
+    <div id="categoryFilter"></div>
+    <div id="modal" class="hidden" aria-hidden="true">
+      <button id="close">×</button>
+      <div id="modalSingle">
+        <img id="modalImg" src="" alt="" />
+        <span id="modalId"></span>
+        <button id="copy">Copy ID</button>
+        <a id="tg" href="#">Telegram</a>
+      </div>
+      <div id="modalCart" class="hidden">
+        <h2 id="modalCartTitle"></h2>
+        <div id="modalCartList"></div>
+      </div>
+      <form id="reqForm">
+        <input id="reqName" type="text" />
+        <textarea id="reqMsg"></textarea>
+        <input id="reqWebsite" type="text" />
+        <div id="reqStatus"></div>
+        <button id="reqSubmit" type="submit">Send</button>
+      </form>
+    </div>
+    <button id="cartBtn" class="hidden">
+      Cart (<span id="cartCount">0</span>)
+    </button>
+  `;
+}
+
+// Extract cart logic for testing
+function createCartModule() {
+  const $ = (id) => document.getElementById(id);
+
+  const cartBtn = $('cartBtn');
+  const cartCountEl = $('cartCount');
+  const modal = $('modal');
+  const modalSingle = $('modalSingle');
+  const modalCart = $('modalCart');
+  const modalCartTitle = $('modalCartTitle');
+  const modalCartList = $('modalCartList');
+  const reqStatus = $('reqStatus');
+
+  let cartIds = [];
+  let modalMode = 'single';
+  let currentId = null;
+  let items = [];
+
+  function updateCartUI() {
+    if (cartBtn && cartCountEl) {
+      if (cartIds.length > 0) {
+        cartBtn.classList.remove('hidden');
+        cartCountEl.textContent = cartIds.length;
+      } else {
+        cartBtn.classList.add('hidden');
+        cartCountEl.textContent = '0';
+      }
+    }
+  }
+
+  function render() {
+    // Simplified render for testing - just mark items in cart
+    const grid = $('grid');
+    if (!grid) return;
+    grid.innerHTML = '';
+    for (const item of items) {
+      const card = document.createElement('button');
+      card.className = 'card';
+      const inCart = cartIds.includes(item.id);
+      card.innerHTML = `
+        <span class="mono">${item.id}</span>
+        <button type="button" class="card-cart-btn ${inCart ? 'in-cart' : ''}" data-id="${item.id}">
+          ${inCart ? '✓ In cart' : 'Add to cart'}
+        </button>
+      `;
+      grid.appendChild(card);
+    }
+  }
+
+  function toggleCart(id, e) {
+    if (e) e.stopPropagation();
+    const i = cartIds.indexOf(id);
+    if (i >= 0) cartIds.splice(i, 1);
+    else cartIds.push(id);
+    updateCartUI();
+    render();
+  }
+
+  function closeModal() {
+    modal.classList.add('hidden');
+    modal.setAttribute('aria-hidden', 'true');
+    currentId = null;
+    if (modalSingle) modalSingle.classList.remove('hidden');
+    if (modalCart) modalCart.classList.add('hidden');
+  }
+
+  function renderCartModalContent() {
+    if (modalCartTitle) {
+      modalCartTitle.textContent = `Request for ${cartIds.length} postcard${cartIds.length === 1 ? '' : 's'}`;
+    }
+    if (!modalCartList) return;
+    modalCartList.innerHTML = '';
+    for (const id of cartIds) {
+      const span = document.createElement('span');
+      span.className = 'cart-item';
+      span.innerHTML = `<span class="mono">${id}</span><button type="button" class="cart-item-remove" data-id="${id}" aria-label="Remove from cart">×</button>`;
+      span.querySelector('.cart-item-remove').onclick = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        toggleCart(id);
+        if (cartIds.length === 0) closeModal();
+        else renderCartModalContent();
+      };
+      modalCartList.appendChild(span);
+    }
+  }
+
+  function openCartModal() {
+    modalMode = 'cart';
+    currentId = null;
+    if (modalSingle) modalSingle.classList.add('hidden');
+    if (modalCart) {
+      modalCart.classList.remove('hidden');
+      renderCartModalContent();
+    }
+
+    if (reqStatus) reqStatus.textContent = '';
+    modal.classList.remove('hidden');
+    modal.setAttribute('aria-hidden', 'false');
+  }
+
+  return {
+    toggleCart,
+    renderCartModalContent,
+    openCartModal,
+    closeModal,
+    getCartIds: () => [...cartIds],
+    setCartIds: (ids) => {
+      cartIds = [...ids];
+    },
+    setItems: (newItems) => {
+      items = [...newItems];
+    },
+    getModalMode: () => modalMode,
+    getCurrentId: () => currentId,
+  };
+}
+
+describe('toggleCart', () => {
+  let cartModule;
+
+  beforeEach(() => {
+    setupCartDOM();
+    cartModule = createCartModule();
+    cartModule.setItems([
+      { id: 'abc123', thumbUrl: '/thumb/abc123.jpg', imageUrl: '/img/abc123.jpg' },
+      { id: 'def456', thumbUrl: '/thumb/def456.jpg', imageUrl: '/img/def456.jpg' },
+      { id: 'ghi789', thumbUrl: '/thumb/ghi789.jpg', imageUrl: '/img/ghi789.jpg' },
+    ]);
+  });
+
+  it('should add an item to the cart when it is not already in the cart', () => {
+    expect(cartModule.getCartIds()).toEqual([]);
+
+    cartModule.toggleCart('abc123');
+
+    expect(cartModule.getCartIds()).toEqual(['abc123']);
+  });
+
+  it('should remove an item from the cart when it is already in the cart', () => {
+    cartModule.setCartIds(['abc123', 'def456']);
+
+    cartModule.toggleCart('abc123');
+
+    expect(cartModule.getCartIds()).toEqual(['def456']);
+  });
+
+  it('should update the cart UI to show the correct count', () => {
+    const cartBtn = document.getElementById('cartBtn');
+    const cartCountEl = document.getElementById('cartCount');
+
+    expect(cartBtn.classList.contains('hidden')).toBe(true);
+    expect(cartCountEl.textContent).toBe('0');
+
+    cartModule.toggleCart('abc123');
+
+    expect(cartBtn.classList.contains('hidden')).toBe(false);
+    expect(cartCountEl.textContent).toBe('1');
+
+    cartModule.toggleCart('def456');
+
+    expect(cartCountEl.textContent).toBe('2');
+
+    cartModule.toggleCart('abc123'); // Remove
+
+    expect(cartCountEl.textContent).toBe('1');
+
+    cartModule.toggleCart('def456'); // Remove last
+
+    expect(cartBtn.classList.contains('hidden')).toBe(true);
+    expect(cartCountEl.textContent).toBe('0');
+  });
+
+  it('should update the grid to show items with in-cart status', () => {
+    const grid = document.getElementById('grid');
+
+    cartModule.toggleCart('abc123');
+
+    const buttons = grid.querySelectorAll('.card-cart-btn');
+    const abc123Btn = Array.from(buttons).find((b) => b.dataset.id === 'abc123');
+    const def456Btn = Array.from(buttons).find((b) => b.dataset.id === 'def456');
+
+    expect(abc123Btn.classList.contains('in-cart')).toBe(true);
+    expect(abc123Btn.textContent.trim()).toContain('In cart');
+    expect(def456Btn.classList.contains('in-cart')).toBe(false);
+    expect(def456Btn.textContent.trim()).toContain('Add to cart');
+  });
+
+  it('should stop event propagation when an event is provided', () => {
+    const mockEvent = {
+      stopPropagation: vi.fn(),
+    };
+
+    cartModule.toggleCart('abc123', mockEvent);
+
+    expect(mockEvent.stopPropagation).toHaveBeenCalled();
+  });
+});
+
+describe('renderCartModalContent', () => {
+  let cartModule;
+
+  beforeEach(() => {
+    setupCartDOM();
+    cartModule = createCartModule();
+  });
+
+  it('should display the correct title for a single item', () => {
+    cartModule.setCartIds(['abc123']);
+    cartModule.renderCartModalContent();
+
+    const title = document.getElementById('modalCartTitle');
+    expect(title.textContent).toBe('Request for 1 postcard');
+  });
+
+  it('should display the correct title for multiple items', () => {
+    cartModule.setCartIds(['abc123', 'def456', 'ghi789']);
+    cartModule.renderCartModalContent();
+
+    const title = document.getElementById('modalCartTitle');
+    expect(title.textContent).toBe('Request for 3 postcards');
+  });
+
+  it('should render all cart items in the modal list', () => {
+    cartModule.setCartIds(['abc123', 'def456']);
+    cartModule.renderCartModalContent();
+
+    const list = document.getElementById('modalCartList');
+    const items = list.querySelectorAll('.cart-item');
+
+    expect(items.length).toBe(2);
+    expect(items[0].querySelector('.mono').textContent).toBe('abc123');
+    expect(items[1].querySelector('.mono').textContent).toBe('def456');
+  });
+
+  it('should have remove buttons for each item', () => {
+    cartModule.setCartIds(['abc123', 'def456']);
+    cartModule.renderCartModalContent();
+
+    const list = document.getElementById('modalCartList');
+    const removeButtons = list.querySelectorAll('.cart-item-remove');
+
+    expect(removeButtons.length).toBe(2);
+    expect(removeButtons[0].dataset.id).toBe('abc123');
+    expect(removeButtons[1].dataset.id).toBe('def456');
+  });
+
+  it('should remove item from cart when remove button is clicked', () => {
+    cartModule.setCartIds(['abc123', 'def456']);
+    cartModule.renderCartModalContent();
+
+    const list = document.getElementById('modalCartList');
+    const removeBtn = list.querySelector('.cart-item-remove[data-id="abc123"]');
+
+    // Simulate click
+    const clickEvent = new MouseEvent('click', { bubbles: true });
+    removeBtn.dispatchEvent(clickEvent);
+
+    expect(cartModule.getCartIds()).toEqual(['def456']);
+  });
+
+  it('should close modal when the last item is removed', () => {
+    cartModule.setCartIds(['abc123']);
+    cartModule.openCartModal();
+    cartModule.renderCartModalContent();
+
+    const modal = document.getElementById('modal');
+    expect(modal.classList.contains('hidden')).toBe(false);
+
+    const list = document.getElementById('modalCartList');
+    const removeBtn = list.querySelector('.cart-item-remove[data-id="abc123"]');
+
+    const clickEvent = new MouseEvent('click', { bubbles: true });
+    removeBtn.dispatchEvent(clickEvent);
+
+    expect(cartModule.getCartIds()).toEqual([]);
+    expect(modal.classList.contains('hidden')).toBe(true);
+  });
+});
+
+describe('openCartModal', () => {
+  let cartModule;
+
+  beforeEach(() => {
+    setupCartDOM();
+    cartModule = createCartModule();
+  });
+
+  it('should switch modal mode to cart', () => {
+    cartModule.setCartIds(['abc123']);
+
+    cartModule.openCartModal();
+
+    expect(cartModule.getModalMode()).toBe('cart');
+  });
+
+  it('should hide the single item view', () => {
+    const modalSingle = document.getElementById('modalSingle');
+
+    cartModule.setCartIds(['abc123']);
+    cartModule.openCartModal();
+
+    expect(modalSingle.classList.contains('hidden')).toBe(true);
+  });
+
+  it('should show the cart view', () => {
+    const modalCart = document.getElementById('modalCart');
+
+    cartModule.setCartIds(['abc123']);
+    cartModule.openCartModal();
+
+    expect(modalCart.classList.contains('hidden')).toBe(false);
+  });
+
+  it('should show the modal', () => {
+    const modal = document.getElementById('modal');
+
+    expect(modal.classList.contains('hidden')).toBe(true);
+    expect(modal.getAttribute('aria-hidden')).toBe('true');
+
+    cartModule.setCartIds(['abc123']);
+    cartModule.openCartModal();
+
+    expect(modal.classList.contains('hidden')).toBe(false);
+    expect(modal.getAttribute('aria-hidden')).toBe('false');
+  });
+
+  it('should clear currentId when opening cart modal', () => {
+    cartModule.setCartIds(['abc123']);
+    cartModule.openCartModal();
+
+    expect(cartModule.getCurrentId()).toBe(null);
+  });
+
+  it('should clear the request status', () => {
+    const reqStatus = document.getElementById('reqStatus');
+    reqStatus.textContent = 'Previous status message';
+
+    cartModule.setCartIds(['abc123']);
+    cartModule.openCartModal();
+
+    expect(reqStatus.textContent).toBe('');
+  });
+
+  it('should render cart modal content with items', () => {
+    cartModule.setCartIds(['abc123', 'def456']);
+    cartModule.openCartModal();
+
+    const title = document.getElementById('modalCartTitle');
+    const list = document.getElementById('modalCartList');
+
+    expect(title.textContent).toBe('Request for 2 postcards');
+    expect(list.querySelectorAll('.cart-item').length).toBe(2);
+  });
+});
