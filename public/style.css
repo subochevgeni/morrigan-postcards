@@ -52,6 +52,30 @@ main {
   padding: var(--pad);
 }
 
+.category-filter {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 16px;
+  align-items: center;
+}
+.category-filter .filter-btn {
+  padding: 8px 14px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  background: rgba(255, 255, 255, 0.06);
+  color: #e8e8e8;
+  font-size: 13px;
+  cursor: pointer;
+}
+.category-filter .filter-btn:hover {
+  background: rgba(255, 255, 255, 0.1);
+}
+.category-filter .filter-btn.active {
+  background: rgba(255, 255, 255, 0.18);
+  border-color: rgba(255, 255, 255, 0.3);
+}
+
 .grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));

@@ -22,6 +22,10 @@ const $ = (id) => document.getElementById(id);
 
 const grid = $('grid');
 const q = $('q');
+const categoryFilterEl = $('categoryFilter');
+
+let categories = [];
+let currentCategory = '';
 
 const modal = $('modal');
 const closeBtn = $('close');
@@ -110,18 +114,50 @@ function render() {
   for (const item of filtered) {
     const card = document.createElement('button');
     card.className = 'card';
+    const catLabel = categories.find((c) => c.slug === item.category)?.en || item.category || '';
     card.innerHTML = `
       <img src="${item.thumbUrl}" alt="${item.id}" loading="lazy">
-      <div class="meta">ID: <span class="mono">${item.id}</span></div>
+      <div class="meta">ID: <span class="mono">${item.id}</span>${catLabel ? ` · ${catLabel}` : ''}</div>
     `;
     card.onclick = () => openModal(item);
     grid.appendChild(card);
   }
 }
 
+function renderCategoryFilter() {
+  if (!categoryFilterEl || !categories.length) return;
+  categoryFilterEl.innerHTML = '';
+  const allBtn = document.createElement('button');
+  allBtn.type = 'button';
+  allBtn.className = 'filter-btn' + (currentCategory === '' ? ' active' : '');
+  allBtn.textContent = 'All';
+  allBtn.onclick = () => {
+    currentCategory = '';
+    categoryFilterEl.querySelectorAll('.filter-btn').forEach((b) => b.classList.remove('active'));
+    allBtn.classList.add('active');
+    load();
+  };
+  categoryFilterEl.appendChild(allBtn);
+  for (const cat of categories) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'filter-btn' + (currentCategory === cat.slug ? ' active' : '');
+    btn.textContent = cat.en;
+    btn.onclick = () => {
+      currentCategory = cat.slug;
+      categoryFilterEl.querySelectorAll('.filter-btn').forEach((b) => b.classList.remove('active'));
+      btn.classList.add('active');
+      load();
+    };
+    categoryFilterEl.appendChild(btn);
+  }
+}
+
 async function load() {
   try {
-    const r = await fetch('/api/cards?limit=200');
+    const params = new URLSearchParams({ limit: '200' });
+    if (currentCategory) params.set('category', currentCategory);
+    const r = await fetch('/api/cards?' + params.toString());
     if (!r.ok) {
       console.error('Failed to load cards:', r.status, r.statusText);
       return;
@@ -137,6 +173,18 @@ async function load() {
     }
   } catch (err) {
     console.error('Failed to load postcards:', err);
+  }
+}
+
+async function loadCategories() {
+  try {
+    const r = await fetch('/api/categories');
+    if (!r.ok) return;
+    const data = await r.json();
+    categories = data.categories || [];
+    renderCategoryFilter();
+  } catch (err) {
+    console.warn('Failed to load categories:', err);
   }
 }
 
@@ -242,5 +290,6 @@ form.addEventListener('submit', async (e) => {
     }
   }
 
+  await loadCategories();
   load();
 })();

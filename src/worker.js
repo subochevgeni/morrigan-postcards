@@ -8,6 +8,36 @@ const json = (obj, status = 200) =>
 
 const text = (s, status = 200) => new Response(s, { status });
 
+// Категории открыток (как у посткроссеров): slug -> { en, ru }
+const CATEGORIES = {
+  nature: { en: 'Nature', ru: 'Природа' },
+  animals: { en: 'Animals', ru: 'Животные' },
+  architecture: { en: 'Architecture', ru: 'Архитектура' },
+  transport: { en: 'Transport', ru: 'Транспорт' },
+  people: { en: 'People', ru: 'Люди' },
+  travel: { en: 'Travel', ru: 'Путешествия' },
+  art: { en: 'Art', ru: 'Искусство' },
+  other: { en: 'Other', ru: 'Разное' },
+};
+
+const CATEGORY_SLUGS = Object.keys(CATEGORIES);
+
+function normalizeCategory(caption) {
+  if (!caption || typeof caption !== 'string') return 'other';
+  const s = caption.trim().toLowerCase();
+  if (!s) return 'other';
+  const byEn = Object.entries(CATEGORIES).find(
+    ([slug, { en }]) => en.toLowerCase() === s
+  );
+  if (byEn) return byEn[0];
+  const byRu = Object.entries(CATEGORIES).find(
+    ([slug, { ru }]) => ru.toLowerCase() === s
+  );
+  if (byRu) return byRu[0];
+  if (CATEGORY_SLUGS.includes(s)) return s;
+  return 'other';
+}
+
 function makeId(len = 6) {
   const alphabet = '23456789abcdefghijkmnpqrstuvwxyz';
   const bytes = new Uint8Array(len);
@@ -72,9 +102,11 @@ function adminKeyboard() {
 }
 
 function adminHelpText() {
+  const catList = CATEGORY_SLUGS.join(', ');
   return (
     '📌 Admin menu\n' +
-    '• Send a postcard photo (as Photo) to add it\n\n' +
+    '• Send a postcard photo (as Photo) to add it\n' +
+    '• Add category in photo caption: ' + catList + '\n\n' +
     'Commands:\n' +
     '/help — this menu\n' +
     '/myid — show chat_id\n' +
@@ -87,18 +119,19 @@ function adminHelpText() {
 
 async function dbGetCard(env, id) {
   const row = await env.DB.prepare(
-    'SELECT id, created_at, status, image_key, thumb_key FROM cards WHERE id=?1'
+    'SELECT id, created_at, status, category, image_key, thumb_key FROM cards WHERE id=?1'
   )
     .bind(id)
     .first();
   return row || null;
 }
 
-async function dbInsertCard(env, { id, createdAt, imageKey, thumbKey }) {
+async function dbInsertCard(env, { id, createdAt, category, imageKey, thumbKey }) {
+  const cat = CATEGORY_SLUGS.includes(category) ? category : 'other';
   await env.DB.prepare(
-    "INSERT INTO cards (id, created_at, status, image_key, thumb_key) VALUES (?1, ?2, 'available', ?3, ?4)"
+    "INSERT INTO cards (id, created_at, status, category, image_key, thumb_key) VALUES (?1, ?2, 'available', ?3, ?4, ?5)"
   )
-    .bind(id, createdAt, imageKey, thumbKey)
+    .bind(id, createdAt, cat, imageKey, thumbKey)
     .run();
 }
 
@@ -374,6 +407,10 @@ async function handleTelegram(request, env) {
     return json({ ok: true });
   }
 
+  const caption = typeof msg.caption === 'string' ? msg.caption : '';
+  const category = normalizeCategory(caption);
+  const siteUrl = getSiteUrl(env);
+
   try {
     const large = photos[photos.length - 1];
     const mid = photos[Math.max(0, Math.floor((photos.length - 1) / 2))];
@@ -391,12 +428,12 @@ async function handleTelegram(request, env) {
     await env.BUCKET.put(fullKey, fullBuf, { httpMetadata: { contentType: 'image/jpeg' } });
     await env.BUCKET.put(thumbKey, thumbBuf, { httpMetadata: { contentType: 'image/jpeg' } });
 
-    await dbInsertCard(env, { id, createdAt: Date.now(), imageKey: fullKey, thumbKey });
+    await dbInsertCard(env, { id, createdAt: Date.now(), category, imageKey: fullKey, thumbKey });
 
     await tgSend(
       env,
       chatId,
-      `✅ Added: ${id}\nGallery: https://subach.uk/#${id}\nDelete: /delete ${id}`,
+      `✅ Added: ${id} (${category})\nGallery: ${siteUrl}/#${id}\nDelete: /delete ${id}`,
       adminKeyboard()
     );
   } catch (e) {
@@ -410,19 +447,34 @@ async function handleTelegram(request, env) {
 async function listCards(env, url) {
   const limitRaw = Number(url.searchParams.get('limit') || '200');
   const limit = Number.isFinite(limitRaw) ? Math.min(Math.max(limitRaw, 1), 200) : 200;
+  const category = String(url.searchParams.get('category') || '').trim().toLowerCase();
 
-  const { results } = await env.DB.prepare(
-    "SELECT id, created_at FROM cards WHERE status='available' ORDER BY created_at DESC LIMIT ?1"
-  )
-    .bind(limit)
-    .all();
+  const validCategory = category && CATEGORY_SLUGS.includes(category) ? category : null;
+  const sql = validCategory
+    ? "SELECT id, created_at, category FROM cards WHERE status='available' AND category=?1 ORDER BY created_at DESC LIMIT ?2"
+    : "SELECT id, created_at, category FROM cards WHERE status='available' ORDER BY created_at DESC LIMIT ?1";
+
+  const stmt = validCategory
+    ? env.DB.prepare(sql).bind(validCategory, limit)
+    : env.DB.prepare(sql).bind(limit);
+  const { results } = await stmt.all();
 
   return json({
     items: (results || []).map((r) => ({
       id: r.id,
       createdAt: r.created_at,
+      category: r.category || 'other',
       thumbUrl: `/thumb/${r.id}.jpg`,
       imageUrl: `/img/${r.id}.jpg`,
+    })),
+  });
+}
+
+function getCategories() {
+  return json({
+    categories: CATEGORY_SLUGS.map((slug) => ({
+      slug,
+      ...CATEGORIES[slug],
     })),
   });
 }
@@ -452,6 +504,10 @@ export default {
         turnstileSiteKey: String(env.TURNSTILE_SITE_KEY || ''),
         siteUrl: String(env.SITE_URL || 'https://subach.uk'),
       });
+    }
+
+    if (url.pathname === '/api/categories' && request.method === 'GET') {
+      return getCategories();
     }
 
     const img = url.pathname.match(/^\/img\/([0-9a-z]+)\.jpg$/i);
