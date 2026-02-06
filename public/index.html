@@ -19,8 +19,13 @@
         <div class="title">Postcards</div>
         <div class="sub">Pick a postcard. First come, first served. No reservations.</div>
       </div>
-      <label for="q" class="sr-only">Search postcards by ID</label>
-      <input id="q" class="search" placeholder="Search by ID…" aria-label="Search postcards by ID" />
+      <div class="top-actions">
+        <button type="button" id="cartBtn" class="cart-btn hidden" aria-label="Open cart">
+          <span class="cart-btn-label">Cart</span> (<span id="cartCount">0</span>)
+        </button>
+        <label for="q" class="sr-only">Search postcards by ID</label>
+        <input id="q" class="search" placeholder="Search by ID…" aria-label="Search postcards by ID" />
+      </div>
     </header>
 
     <main>
@@ -32,18 +37,23 @@
       <div class="modal-inner">
         <button id="close" class="close" aria-label="Close">×</button>
 
-        <img id="modalImg" class="big" alt="" aria-describedby="modalId" />
-
-        <div class="bar">
-          <div>ID: <span id="modalId" class="mono"></span></div>
-
-          <div class="actions">
-            <button id="copy" class="btn">Copy ID</button>
-            <a id="tg" class="btn primary" target="_blank" rel="noreferrer">Message on Telegram</a>
+        <div id="modalSingle" class="modal-single">
+          <img id="modalImg" class="big" alt="" aria-describedby="modalId" />
+          <div class="bar">
+            <div>ID: <span id="modalId" class="mono"></span></div>
+            <div class="actions">
+              <button id="copy" class="btn">Copy ID</button>
+              <a id="tg" class="btn primary" target="_blank" rel="noreferrer">Message on Telegram</a>
+            </div>
           </div>
         </div>
 
-        <!-- Request form is ALWAYS visible (so the button never "disappears") -->
+        <div id="modalCart" class="modal-cart hidden">
+          <div class="formTitle" id="modalCartTitle">Request for 0 postcards</div>
+          <div id="modalCartList" class="modal-cart-list"></div>
+        </div>
+
+        <!-- Request form is ALWAYS visible -->
         <form id="reqForm" class="form">
           <div class="formTitle">No Telegram? Send a request</div>
 

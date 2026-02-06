@@ -31,8 +31,14 @@ const modal = $('modal');
 const closeBtn = $('close');
 const modalImg = $('modalImg');
 const modalId = $('modalId');
+const modalSingle = $('modalSingle');
+const modalCart = $('modalCart');
+const modalCartTitle = $('modalCartTitle');
+const modalCartList = $('modalCartList');
 const copyBtn = $('copy');
 const tgLink = $('tg');
+const cartBtn = $('cartBtn');
+const cartCountEl = $('cartCount');
 
 const form = $('reqForm');
 const reqName = $('reqName');
@@ -43,6 +49,8 @@ const reqSubmit = $('reqSubmit');
 
 let items = [];
 let currentId = null;
+let cartIds = [];
+let modalMode = 'single';
 
 function resetTurnstile() {
   try {
@@ -61,7 +69,10 @@ function getTurnstileToken() {
 }
 
 function openModal(item) {
+  modalMode = 'single';
   currentId = item.id;
+  if (modalSingle) modalSingle.classList.remove('hidden');
+  if (modalCart) modalCart.classList.add('hidden');
 
   modal.classList.remove('hidden');
   modal.setAttribute('aria-hidden', 'false');
@@ -76,18 +87,68 @@ function openModal(item) {
     setTimeout(() => (copyBtn.textContent = 'Copy ID'), 900);
   };
 
-  // Reset form
   reqStatus.textContent = '';
   reqName.value = '';
   reqMsg.value = '';
   reqWebsite.value = '';
 
-  // Attempt to reset Turnstile (auto-rendered in DOM)
-  setTimeout(() => {
-    resetTurnstile();
-  }, 150);
-
+  setTimeout(() => resetTurnstile(), 150);
   location.hash = item.id;
+}
+
+function toggleCart(id, e) {
+  if (e) e.stopPropagation();
+  const i = cartIds.indexOf(id);
+  if (i >= 0) cartIds.splice(i, 1);
+  else cartIds.push(id);
+  updateCartUI();
+  render();
+}
+
+function updateCartUI() {
+  if (cartBtn && cartCountEl) {
+    if (cartIds.length > 0) {
+      cartBtn.classList.remove('hidden');
+      cartCountEl.textContent = cartIds.length;
+    } else {
+      cartBtn.classList.add('hidden');
+      cartCountEl.textContent = '0';
+    }
+  }
+}
+
+function renderCartModalContent() {
+  if (modalCartTitle) modalCartTitle.textContent = `Request for ${cartIds.length} postcard${cartIds.length === 1 ? '' : 's'}`;
+  if (!modalCartList) return;
+  modalCartList.innerHTML = '';
+  for (const id of cartIds) {
+    const span = document.createElement('span');
+    span.className = 'cart-item';
+    span.innerHTML = `<span class="mono">${id}</span><button type="button" class="cart-item-remove" data-id="${id}" aria-label="Remove from cart">×</button>`;
+    span.querySelector('.cart-item-remove').onclick = (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      toggleCart(id);
+      if (cartIds.length === 0) closeModal();
+      else renderCartModalContent();
+    };
+    modalCartList.appendChild(span);
+  }
+}
+
+function openCartModal() {
+  modalMode = 'cart';
+  currentId = null;
+  if (modalSingle) modalSingle.classList.add('hidden');
+  if (modalCart) {
+    modalCart.classList.remove('hidden');
+    renderCartModalContent();
+  }
+
+  reqStatus.textContent = '';
+  setTimeout(() => resetTurnstile(), 150);
+  modal.classList.remove('hidden');
+  modal.setAttribute('aria-hidden', 'false');
 }
 
 function closeModal() {
@@ -95,6 +156,8 @@ function closeModal() {
   modal.setAttribute('aria-hidden', 'true');
   modalImg.src = '';
   currentId = null;
+  if (modalSingle) modalSingle.classList.remove('hidden');
+  if (modalCart) modalCart.classList.add('hidden');
   if (location.hash) history.replaceState(null, '', location.pathname + location.search);
 }
 
@@ -102,6 +165,7 @@ closeBtn.onclick = closeModal;
 modal.onclick = (e) => {
   if (e.target === modal) closeModal();
 };
+if (cartBtn) cartBtn.onclick = () => openCartModal();
 window.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') closeModal();
 });
@@ -115,11 +179,19 @@ function render() {
     const card = document.createElement('button');
     card.className = 'card';
     const catLabel = categories.find((c) => c.slug === item.category)?.en || item.category || '';
+    const inCart = cartIds.includes(item.id);
     card.innerHTML = `
       <img src="${item.thumbUrl}" alt="${item.id}" loading="lazy">
-      <div class="meta">ID: <span class="mono">${item.id}</span>${catLabel ? ` · ${catLabel}` : ''}</div>
+      <div class="meta">
+        <div class="card-meta-row">
+          <span>ID: <span class="mono">${item.id}</span>${catLabel ? ` · ${catLabel}` : ''}</span>
+          <button type="button" class="card-cart-btn ${inCart ? 'in-cart' : ''}" data-id="${item.id}" aria-label="${inCart ? 'Remove from cart' : 'Add to cart'}">${inCart ? '✓ In cart' : 'Add to cart'}</button>
+        </div>
+      </div>
     `;
     card.onclick = () => openModal(item);
+    const cartBtnEl = card.querySelector('.card-cart-btn');
+    if (cartBtnEl) cartBtnEl.onclick = (e) => toggleCart(item.id, e);
     grid.appendChild(card);
   }
 }
@@ -195,11 +267,6 @@ form.addEventListener('submit', async (e) => {
 
   reqStatus.textContent = '';
 
-  if (!currentId) {
-    reqStatus.textContent = '❌ Please select a postcard first.';
-    return;
-  }
-
   const name = reqName.value.trim();
   const message = reqMsg.value.trim();
 
@@ -214,13 +281,20 @@ form.addEventListener('submit', async (e) => {
     return;
   }
 
+  const isCart = modalMode === 'cart' && cartIds.length > 0;
+  if (!isCart && !currentId) {
+    reqStatus.textContent = '❌ Please select a postcard or add some to the cart first.';
+    return;
+  }
+
   const payload = {
-    id: currentId,
     name,
     message,
-    website: reqWebsite.value.trim(), // honeypot
+    website: reqWebsite.value.trim(),
     turnstileToken: token,
   };
+  if (isCart) payload.ids = cartIds.slice();
+  else payload.id = currentId;
 
   reqSubmit.disabled = true;
   reqStatus.textContent = 'Sending…';
@@ -234,6 +308,11 @@ form.addEventListener('submit', async (e) => {
 
     if (r.ok) {
       reqStatus.textContent = '✅ Sent! The owners received your request in Telegram.';
+      if (isCart) {
+        cartIds = [];
+        updateCartUI();
+        setTimeout(closeModal, 1200);
+      }
       setTimeout(() => {
         resetTurnstile();
       }, 200);

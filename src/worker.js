@@ -181,6 +181,30 @@ async function notifyAdminsWithRequestCard(env, postcardId, requestText, imageUr
   }
 }
 
+const MAX_CART_IDS = 20;
+
+async function notifyAdminsWithRequestCards(env, postcardIds, requestText) {
+  const siteUrl = getSiteUrl(env);
+  const ids = postcardIds.slice(0, 10);
+  const media = ids.map((id, idx) => ({
+    type: 'photo',
+    media: `${siteUrl}/thumb/${id}.jpg`,
+    caption: idx === 0 ? requestText : `ID: ${id}`,
+  }));
+
+  for (const adminId of getAdminList(env)) {
+    await tgSend(env, adminId, requestText);
+    if (media.length > 0) {
+      const res = await tgSendMediaGroup(env, adminId, media);
+      if (!res?.ok) {
+        for (const id of ids) {
+          await tgSendPhoto(env, adminId, `${siteUrl}/thumb/${id}.jpg`, `ID: ${id}`);
+        }
+      }
+    }
+  }
+}
+
 const TURNSTILE_TEST_SECRET = '1x0000000000000000000000000000000AA';
 
 async function verifyTurnstileWithSecret(request, token, secret) {
@@ -244,9 +268,6 @@ async function handleWebRequest(request, env) {
   // Honeypot
   if (String(body?.website || '').trim()) return json({ ok: true });
 
-  const postcardId = String(body?.id || '')
-    .trim()
-    .toLowerCase();
   const name = String(body?.name || '')
     .trim()
     .slice(0, 80);
@@ -255,12 +276,52 @@ async function handleWebRequest(request, env) {
     .slice(0, 600);
   const token = String(body?.turnstileToken || '').trim();
 
-  if (!/^[0-9a-z]{4,12}$/i.test(postcardId)) return text('bad id', 400);
   if (!name) return text('name required', 400);
   if (!token) return text('turnstile required', 403);
 
   const ts = await verifyTurnstile(request, env, token);
   if (!ts.ok) return text('turnstile failed', 403);
+
+  const siteUrl = getSiteUrl(env);
+  const idsParam = body?.ids;
+  const singleId = body?.id;
+
+  if (Array.isArray(idsParam) && idsParam.length > 0) {
+    const postcardIds = idsParam
+      .map((x) => String(x || '').trim().toLowerCase())
+      .filter((x) => /^[0-9a-z]{4,12}$/i.test(x))
+      .slice(0, MAX_CART_IDS);
+    if (postcardIds.length === 0) return text('bad id', 400);
+
+    for (const id of postcardIds) {
+      const card = await env.DB.prepare("SELECT id FROM cards WHERE id=?1 AND status='available'")
+        .bind(id)
+        .first();
+      if (!card) return text('not found', 404);
+    }
+
+    const now = Date.now();
+    for (const postcardId of postcardIds) {
+      await env.DB.prepare(
+        'INSERT INTO requests (postcard_id, name, message, created_at) VALUES (?1, ?2, ?3, ?4)'
+      )
+        .bind(postcardId, name, message || null, now)
+        .run();
+    }
+
+    const requestText =
+      '🌍 Запрос с сайта (несколько открыток)\n\n' +
+      `📌 Открытки: ${postcardIds.join(', ')}\n` +
+      `👤 Имя: ${name}\n` +
+      `💬 Сообщение: ${message || '—'}\n\n` +
+      `🔗 ${siteUrl}`;
+
+    await notifyAdminsWithRequestCards(env, postcardIds, requestText);
+    return json({ ok: true });
+  }
+
+  const postcardId = String(singleId || '').trim().toLowerCase();
+  if (!/^[0-9a-z]{4,12}$/i.test(postcardId)) return text('bad id', 400);
 
   const card = await env.DB.prepare("SELECT id FROM cards WHERE id=?1 AND status='available'")
     .bind(postcardId)
@@ -274,7 +335,6 @@ async function handleWebRequest(request, env) {
     .bind(postcardId, name, message || null, Date.now())
     .run();
 
-  const siteUrl = getSiteUrl(env);
   const requestText =
     '🌍 Запрос с сайта (без Telegram)\n\n' +
     `📌 Открытка: ${postcardId}\n` +
