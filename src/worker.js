@@ -136,38 +136,15 @@ async function notifyAdmins(env, message) {
   }
 }
 
-async function notifyAdminsWithPreviews(env, requestedId, requestText) {
-  const latest = await dbList(env, 8);
-  const unique = [];
-  const pushUnique = (x) => {
-    if (x && !unique.includes(x)) unique.push(x);
-  };
-  pushUnique(requestedId);
-  for (const id of latest) pushUnique(id);
+function getSiteUrl(env) {
+  return String(env.SITE_URL || 'https://subach.uk').replace(/\/$/, '');
+}
 
-  // максимум 10
-  const ids = unique.slice(0, 10);
-
-  // соберём media array для альбома
-  const media = ids.map((id, idx) => ({
-    type: 'photo',
-    media: `https://subach.uk/thumb/${id}.jpg`,
-    caption: idx === 0 ? requestText : `ID: ${id}`,
-  }));
-
+async function notifyAdminsWithRequestCard(env, postcardId, requestText, imageUrl) {
+  const url = imageUrl || `${getSiteUrl(env)}/thumb/${postcardId}.jpg`;
   for (const adminId of getAdminList(env)) {
-    // Пытаемся отправить альбом; если упадёт — fallback на отдельные sendPhoto
-    const res = await tgSendMediaGroup(env, adminId, media);
-    if (!res?.ok) {
-      await tgSend(env, adminId, requestText);
-      for (const id of ids) {
-        await tgSendPhoto(env, adminId, `https://subach.uk/thumb/${id}.jpg`, `ID: ${id}`);
-      }
-    }
-
-    if (latest.length) {
-      await tgSend(env, adminId, 'Available IDs (latest):\n' + latest.join('\n'));
-    }
+    await tgSend(env, adminId, requestText);
+    await tgSendPhoto(env, adminId, url, `ID: ${postcardId}`);
   }
 }
 
@@ -264,14 +241,15 @@ async function handleWebRequest(request, env) {
     .bind(postcardId, name, message || null, Date.now())
     .run();
 
+  const siteUrl = getSiteUrl(env);
   const requestText =
-    '🌍 New request (no Telegram)\n' +
-    `ID: ${postcardId}\n` +
-    `From: ${name}\n` +
-    `Message: ${message || '-'}\n` +
-    `Link: https://subach.uk/#${postcardId}`;
+    '🌍 Запрос с сайта (без Telegram)\n\n' +
+    `📌 Открытка: ${postcardId}\n` +
+    `👤 Имя: ${name}\n` +
+    `💬 Сообщение: ${message || '—'}\n\n` +
+    `🔗 ${siteUrl}/#${postcardId}`;
 
-  await notifyAdminsWithPreviews(env, postcardId, requestText);
+  await notifyAdminsWithRequestCard(env, postcardId, requestText);
 
   return json({ ok: true });
 }

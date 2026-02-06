@@ -58,9 +58,10 @@ main {
   gap: 12px;
 }
 .card {
-  display: block;
+  display: flex;
+  flex-direction: column;
   padding: 0;
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.12);
   border-radius: 14px;
   overflow: hidden;
   background: rgba(255, 255, 255, 0.04);
@@ -70,12 +71,16 @@ main {
   width: 100%;
   display: block;
   aspect-ratio: 4 / 3;
-  object-fit: cover;
+  object-fit: contain;
+  background: #0d0e12;
 }
-.meta {
-  padding: 10px 12px;
+.card .meta {
+  flex-shrink: 0;
+  padding: 8px 12px;
   font-size: 12px;
-  opacity: 0.9;
+  background: rgba(255, 255, 255, 0.12);
+  color: #fff;
+  font-weight: 500;
 }
 .mono {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
