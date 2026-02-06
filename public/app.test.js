@@ -153,7 +153,7 @@ describe('Request form submission', () => {
     }
 
     // Verify error message
-    expect(reqStatus.textContent).toBe('❌ Please complete the anti-spam check.');
+    expect(reqStatus.textContent).toBe('❌ Please complete the anti-spam check (Turnstile).');
   });
 
   it('shows error when postcard is not found (404)', async () => {
