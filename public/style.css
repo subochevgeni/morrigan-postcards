@@ -147,7 +147,12 @@ main {
   background: rgba(255, 255, 255, 0.18);
 }
 .card-cart-btn.in-cart {
-  background: rgba(255, 255, 255, 0.22);
+  background: #1f8f4e;
+  border-color: #39c16f;
+  color: #eafff1;
+}
+.card-cart-btn.in-cart:hover {
+  background: #23a158;
 }
 .mono {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
