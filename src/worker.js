@@ -206,8 +206,16 @@ async function verifyTurnstile(request, env, token) {
   if (!data?.success) return { ok: false, data };
 
   // При тестовом ключе hostname может быть localhost — не проверяем.
-  if (!usedTestSecret && data.hostname && !String(data.hostname).endsWith('subach.uk')) {
-    return { ok: false, data: { ...data, reason: 'bad-hostname' } };
+  if (!usedTestSecret && data.hostname) {
+    const requestHost = new URL(request.url).hostname;
+    const h = String(data.hostname);
+    const allowed =
+      h.endsWith('subach.uk') ||
+      h.includes('subach.uk') ||
+      h === requestHost;
+    if (!allowed) {
+      return { ok: false, data: { ...data, reason: 'bad-hostname' } };
+    }
   }
 
   return { ok: true, data };
