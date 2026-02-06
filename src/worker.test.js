@@ -358,13 +358,70 @@ describe('worker.fetch integration', () => {
     availableIds = [],
     cards = [],
     insertedRequests = [],
+    cardRecords = [],
+    deletedCardIds = [],
+    adminActionRecords = [],
+    createdAdminActions = [],
+    deletedAdminActionTokens = [],
   } = {}) {
     const available = new Set(availableIds);
+    const cardStore = new Map(
+      cardRecords.map((c) => [
+        c.id,
+        {
+          id: c.id,
+          created_at: c.created_at ?? 0,
+          status: c.status || 'available',
+          category: c.category || 'other',
+          image_key: c.image_key || `cards/${c.id}/full.jpg`,
+          thumb_key: c.thumb_key || `cards/${c.id}/thumb.jpg`,
+        },
+      ])
+    );
+    for (const id of availableIds) {
+      if (!cardStore.has(id)) {
+        cardStore.set(id, {
+          id,
+          created_at: 0,
+          status: 'available',
+          category: 'other',
+          image_key: `cards/${id}/full.jpg`,
+          thumb_key: `cards/${id}/thumb.jpg`,
+        });
+      }
+    }
+    for (const row of cardStore.values()) {
+      if (row.status === 'available') available.add(row.id);
+    }
+
+    const adminActions = new Map(
+      adminActionRecords.map((a) => [
+        a.token,
+        {
+          token: a.token,
+          action_type: a.action_type,
+          payload_json: a.payload_json,
+          created_at: a.created_at ?? Date.now(),
+          expires_at: a.expires_at ?? Date.now() + 60_000,
+        },
+      ])
+    );
 
     return {
       prepare(sql) {
         return {
           bind(...args) {
+            if (
+              sql.includes(
+                'SELECT id, created_at, status, category, image_key, thumb_key FROM cards WHERE id=?1'
+              )
+            ) {
+              const id = args[0];
+              return {
+                first: async () => cardStore.get(id) || null,
+              };
+            }
+
             if (sql.includes("SELECT id FROM cards WHERE id=?1 AND status='available'")) {
               const id = args[0];
               return {
@@ -419,6 +476,75 @@ describe('worker.fetch integration', () => {
               };
             }
 
+            if (sql.includes('DELETE FROM cards WHERE id=?1')) {
+              const id = args[0];
+              return {
+                run: async () => {
+                  deletedCardIds.push(id);
+                  available.delete(id);
+                  cardStore.delete(id);
+                  return {};
+                },
+              };
+            }
+
+            if (sql.includes('INSERT INTO admin_actions')) {
+              const [token, actionType, payloadJson, createdAt, expiresAt] = args;
+              return {
+                run: async () => {
+                  if (adminActions.has(token)) {
+                    throw new Error('UNIQUE constraint failed: admin_actions.token');
+                  }
+                  const row = {
+                    token,
+                    action_type: actionType,
+                    payload_json: payloadJson,
+                    created_at: createdAt,
+                    expires_at: expiresAt,
+                  };
+                  adminActions.set(token, row);
+                  createdAdminActions.push(row);
+                  return {};
+                },
+              };
+            }
+
+            if (
+              sql.includes(
+                'SELECT token, action_type, payload_json, created_at, expires_at FROM admin_actions WHERE token=?1'
+              )
+            ) {
+              const [token] = args;
+              return {
+                first: async () => adminActions.get(token) || null,
+              };
+            }
+
+            if (sql.includes('DELETE FROM admin_actions WHERE token=?1')) {
+              const [token] = args;
+              return {
+                run: async () => {
+                  deletedAdminActionTokens.push(token);
+                  adminActions.delete(token);
+                  return {};
+                },
+              };
+            }
+
+            if (sql.includes('DELETE FROM admin_actions WHERE expires_at <= ?1')) {
+              const [nowTs] = args;
+              return {
+                run: async () => {
+                  for (const [token, row] of adminActions.entries()) {
+                    if (Number(row.expires_at) <= Number(nowTs)) {
+                      adminActions.delete(token);
+                    }
+                  }
+                  return {};
+                },
+              };
+            }
+
             throw new Error(`Unhandled SQL in test: ${sql}`);
           },
         };
@@ -432,7 +558,9 @@ describe('worker.fetch integration', () => {
       ADMIN_CHAT_IDS: adminChatIds,
       TURNSTILE_SECRET_KEY: 'prod-secret',
       TG_BOT_TOKEN: 'test-bot-token',
+      TG_WEBHOOK_SECRET: 'tg-hook-secret',
       SITE_URL: 'https://example.com',
+      BUCKET: { delete: vi.fn() },
       ASSETS: { fetch: vi.fn() },
     };
   }
@@ -484,9 +612,11 @@ describe('worker.fetch integration', () => {
 
   it('handles cart request with ids and inserts one request row per postcard', async () => {
     const insertedRequests = [];
+    const createdAdminActions = [];
     const db = createDbMock({
       availableIds: ['abc123', 'def456'],
       insertedRequests,
+      createdAdminActions,
     });
     const env = createEnv({ db });
 
@@ -527,6 +657,20 @@ describe('worker.fetch integration', () => {
         String(url).includes('/sendMediaGroup')
       );
       expect(sendMediaGroupCalls).toHaveLength(2);
+
+      const sendMessageCalls = fetchMock.mock.calls.filter(([url]) =>
+        String(url).includes('/sendMessage')
+      );
+      expect(sendMessageCalls).toHaveLength(2);
+      const firstPayload = JSON.parse(sendMessageCalls[0][1].body);
+      const callbackData = firstPayload.reply_markup.inline_keyboard
+        .flat()
+        .map((btn) => btn.callback_data);
+      expect(callbackData.some((x) => String(x).startsWith('delall:'))).toBe(true);
+      expect(callbackData).toContain('del:abc123');
+      expect(callbackData).toContain('del:def456');
+      expect(createdAdminActions).toHaveLength(1);
+      expect(createdAdminActions[0].action_type).toBe('bulk_delete_cards');
     } finally {
       global.fetch = prevFetch;
     }
@@ -563,6 +707,147 @@ describe('worker.fetch integration', () => {
 
       expect(response.status).toBe(400);
       expect(text).toBe('bad id');
+    } finally {
+      global.fetch = prevFetch;
+    }
+  });
+
+  it('deletes postcard from callback query action', async () => {
+    const deletedCardIds = [];
+    const db = createDbMock({
+      cardRecords: [
+        {
+          id: 'abc123',
+          created_at: 100,
+          status: 'available',
+          category: 'nature',
+          image_key: 'cards/abc123/full.jpg',
+          thumb_key: 'cards/abc123/thumb.jpg',
+        },
+      ],
+      deletedCardIds,
+    });
+    const env = createEnv({ db, adminChatIds: '1001' });
+
+    const fetchMock = vi.fn(async (url) => {
+      if (url.includes('/answerCallbackQuery')) return { json: async () => ({ ok: true }) };
+      if (url.includes('/sendMessage')) return { json: async () => ({ ok: true }) };
+      throw new Error(`Unexpected fetch URL: ${url}`);
+    });
+    const prevFetch = global.fetch;
+    global.fetch = fetchMock;
+
+    try {
+      const response = await worker.fetch(
+        new Request('https://example.com/tg', {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            'X-Telegram-Bot-Api-Secret-Token': env.TG_WEBHOOK_SECRET,
+          },
+          body: JSON.stringify({
+            callback_query: {
+              id: 'cb_1',
+              data: 'del:abc123',
+              from: { id: 1001 },
+              message: { chat: { id: 1001 } },
+            },
+          }),
+        }),
+        env
+      );
+      const data = await response.json();
+
+      expect(response.status).toBe(200);
+      expect(data).toEqual({ ok: true });
+      expect(env.BUCKET.delete).toHaveBeenCalledWith('cards/abc123/full.jpg');
+      expect(env.BUCKET.delete).toHaveBeenCalledWith('cards/abc123/thumb.jpg');
+      expect(deletedCardIds).toEqual(['abc123']);
+
+      const answerCalls = fetchMock.mock.calls.filter(([url]) =>
+        String(url).includes('/answerCallbackQuery')
+      );
+      expect(answerCalls).toHaveLength(1);
+    } finally {
+      global.fetch = prevFetch;
+    }
+  });
+
+  it('deletes all postcards from bulk callback action token', async () => {
+    const deletedCardIds = [];
+    const deletedAdminActionTokens = [];
+    const db = createDbMock({
+      cardRecords: [
+        {
+          id: 'abc123',
+          status: 'available',
+          image_key: 'cards/abc123/full.jpg',
+          thumb_key: 'cards/abc123/thumb.jpg',
+        },
+        {
+          id: 'def456',
+          status: 'available',
+          image_key: 'cards/def456/full.jpg',
+          thumb_key: 'cards/def456/thumb.jpg',
+        },
+      ],
+      adminActionRecords: [
+        {
+          token: 'tok12345',
+          action_type: 'bulk_delete_cards',
+          payload_json: JSON.stringify({ ids: ['abc123', 'def456', 'gone999'] }),
+          expires_at: Date.now() + 60_000,
+        },
+      ],
+      deletedCardIds,
+      deletedAdminActionTokens,
+    });
+    const env = createEnv({ db, adminChatIds: '1001' });
+
+    const fetchMock = vi.fn(async (url) => {
+      if (url.includes('/answerCallbackQuery')) return { json: async () => ({ ok: true }) };
+      if (url.includes('/sendMessage')) return { json: async () => ({ ok: true }) };
+      throw new Error(`Unexpected fetch URL: ${url}`);
+    });
+    const prevFetch = global.fetch;
+    global.fetch = fetchMock;
+
+    try {
+      const response = await worker.fetch(
+        new Request('https://example.com/tg', {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            'X-Telegram-Bot-Api-Secret-Token': env.TG_WEBHOOK_SECRET,
+          },
+          body: JSON.stringify({
+            callback_query: {
+              id: 'cb_2',
+              data: 'delall:tok12345',
+              from: { id: 1001, username: 'admin' },
+              message: { chat: { id: 1001 } },
+            },
+          }),
+        }),
+        env
+      );
+      const data = await response.json();
+
+      expect(response.status).toBe(200);
+      expect(data).toEqual({ ok: true });
+      expect(env.BUCKET.delete).toHaveBeenCalledWith('cards/abc123/full.jpg');
+      expect(env.BUCKET.delete).toHaveBeenCalledWith('cards/abc123/thumb.jpg');
+      expect(env.BUCKET.delete).toHaveBeenCalledWith('cards/def456/full.jpg');
+      expect(env.BUCKET.delete).toHaveBeenCalledWith('cards/def456/thumb.jpg');
+      expect(deletedCardIds.sort()).toEqual(['abc123', 'def456']);
+      expect(deletedAdminActionTokens).toContain('tok12345');
+
+      const answerCalls = fetchMock.mock.calls.filter(([url]) =>
+        String(url).includes('/answerCallbackQuery')
+      );
+      expect(answerCalls).toHaveLength(1);
+      const answerPayload = JSON.parse(answerCalls[0][1].body);
+      expect(answerPayload.text).toBe('Removed 2/3');
     } finally {
       global.fetch = prevFetch;
     }

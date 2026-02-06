@@ -27,3 +27,15 @@ CREATE INDEX IF NOT EXISTS idx_requests_created_at
 
 CREATE INDEX IF NOT EXISTS idx_requests_postcard_id
   ON requests(postcard_id);
+
+-- Short-lived admin actions for Telegram callback buttons (e.g. bulk delete)
+CREATE TABLE IF NOT EXISTS admin_actions (
+  token TEXT PRIMARY KEY,
+  action_type TEXT NOT NULL,
+  payload_json TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  expires_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_admin_actions_expires_at
+  ON admin_actions(expires_at);

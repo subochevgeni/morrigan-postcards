@@ -93,9 +93,9 @@ async function tgGetFileUrl(env, fileId) {
 function adminKeyboard() {
   return {
     keyboard: [
-      [{ text: '/help' }, { text: '/stats' }, { text: '/last' }],
-      [{ text: '/list 20' }, { text: '/myid' }],
-      [{ text: '/delete ' }],
+      [{ text: '📊 Stats' }, { text: '🆕 Last' }],
+      [{ text: '🗂️ List 20' }, { text: '🆔 My ID' }],
+      [{ text: '🗑 Delete by ID' }, { text: '❓ Help' }],
     ],
     resize_keyboard: true,
   };
@@ -104,17 +104,169 @@ function adminKeyboard() {
 function adminHelpText() {
   const catList = CATEGORY_SLUGS.join(', ');
   return (
-    '📌 Admin menu\n' +
-    '• Send a postcard photo (as Photo) to add it\n' +
-    '• Add category in photo caption: ' + catList + '\n\n' +
+    '📌 Admin panel\n' +
+    '• Send postcard as Photo to add it\n' +
+    '• Optional category in caption: ' + catList + '\n' +
+    '• For website requests, use 🗑 buttons under request message (single or Delete all)\n\n' +
     'Commands:\n' +
     '/help — this menu\n' +
     '/myid — show chat_id\n' +
     '/stats — how many available\n' +
     '/last — last added\n' +
-    '/list [n] — last n IDs\n' +
+    '/list [n] — last n IDs (1..200)\n' +
     '/delete <id> — delete postcard'
   );
+}
+
+function normalizeAdminText(text) {
+  const t = String(text || '').trim();
+  if (t === '📊 Stats') return '/stats';
+  if (t === '🆕 Last') return '/last';
+  if (t === '🗂️ List 20') return '/list 20';
+  if (t === '🆔 My ID') return '/myid';
+  if (t === '🗑 Delete by ID') return '/delete';
+  if (t === '❓ Help') return '/help';
+  return t;
+}
+
+function cleanPostcardIds(ids, limit = 10) {
+  return Array.from(
+    new Set(
+      ids
+        .map((x) => String(x || '').trim().toLowerCase())
+        .filter((x) => /^[0-9a-z]{4,12}$/i.test(x))
+    )
+  ).slice(0, limit);
+}
+
+function buildDeleteInlineKeyboard(ids, bulkToken = null) {
+  const clean = cleanPostcardIds(ids, 10);
+  if (!clean.length) return null;
+
+  const rows = [];
+  if (bulkToken && clean.length > 1) {
+    rows.push([
+      {
+        text: `🗑 Delete all (${clean.length})`,
+        callback_data: `delall:${bulkToken}`,
+      },
+    ]);
+  }
+
+  for (let i = 0; i < clean.length; i += 2) {
+    rows.push(
+      clean.slice(i, i + 2).map((id) => ({
+        text: `🗑 ${id}`,
+        callback_data: `del:${id}`,
+      }))
+    );
+  }
+  return { inline_keyboard: rows };
+}
+
+const ADMIN_ACTION_TTL_MS = 1000 * 60 * 60 * 24;
+
+async function dbCreateAdminAction(env, { token, actionType, payloadJson, createdAt, expiresAt }) {
+  await env.DB.prepare(
+    'INSERT INTO admin_actions (token, action_type, payload_json, created_at, expires_at) VALUES (?1, ?2, ?3, ?4, ?5)'
+  )
+    .bind(token, actionType, payloadJson, createdAt, expiresAt)
+    .run();
+}
+
+async function dbGetAdminAction(env, token) {
+  const row = await env.DB.prepare(
+    'SELECT token, action_type, payload_json, created_at, expires_at FROM admin_actions WHERE token=?1'
+  )
+    .bind(token)
+    .first();
+  return row || null;
+}
+
+async function dbDeleteAdminAction(env, token) {
+  await env.DB.prepare('DELETE FROM admin_actions WHERE token=?1').bind(token).run();
+}
+
+async function dbDeleteExpiredAdminActions(env, nowTs) {
+  await env.DB.prepare('DELETE FROM admin_actions WHERE expires_at <= ?1')
+    .bind(nowTs)
+    .run();
+}
+
+async function createBulkDeleteAction(env, ids) {
+  const clean = cleanPostcardIds(ids, 10);
+  if (clean.length < 2) return null;
+
+  const now = Date.now();
+  const expiresAt = now + ADMIN_ACTION_TTL_MS;
+  const payloadJson = JSON.stringify({ ids: clean });
+
+  try {
+    await dbDeleteExpiredAdminActions(env, now);
+  } catch (e) {
+    console.log('admin action cleanup failed', e);
+  }
+
+  for (let i = 0; i < 5; i++) {
+    const token = makeId(8);
+    try {
+      await dbCreateAdminAction(env, {
+        token,
+        actionType: 'bulk_delete_cards',
+        payloadJson,
+        createdAt: now,
+        expiresAt,
+      });
+      return token;
+    } catch (e) {
+      const m = String(e?.message || '');
+      if (m.toLowerCase().includes('unique')) continue;
+      console.log('admin action create failed', e);
+      return null;
+    }
+  }
+
+  return null;
+}
+
+async function deleteCardIfExists(env, id) {
+  const card = await dbGetCard(env, id);
+  if (!card) return { id, deleted: false };
+
+  await env.BUCKET.delete(card.image_key);
+  await env.BUCKET.delete(card.thumb_key);
+  await dbDeleteCard(env, id);
+  return { id, deleted: true };
+}
+
+function parseBulkDeleteIds(actionRow) {
+  if (!actionRow || actionRow.action_type !== 'bulk_delete_cards') return [];
+  let parsed;
+  try {
+    parsed = JSON.parse(actionRow.payload_json || '{}');
+  } catch {
+    parsed = {};
+  }
+  return cleanPostcardIds(Array.isArray(parsed?.ids) ? parsed.ids : [], 10);
+}
+
+function isActionExpired(actionRow) {
+  return Number(actionRow?.expires_at || 0) <= Date.now();
+}
+
+function summarizeBulkDelete(results) {
+  const removed = results.filter((x) => x.deleted).map((x) => x.id);
+  const missing = results.filter((x) => !x.deleted).map((x) => x.id);
+
+  let out = `🗑 Bulk delete done: removed ${removed.length}/${results.length}`;
+  if (removed.length) out += `\nRemoved: ${removed.join(', ')}`;
+  if (missing.length) out += `\nAlready missing: ${missing.join(', ')}`;
+  return out;
+}
+
+function callbackNoticeText(prefix, callback) {
+  const user = callback?.from?.username ? `@${callback.from.username}` : '(no username)';
+  return `${prefix} by ${user}`;
 }
 
 async function dbGetCard(env, id) {
@@ -175,8 +327,12 @@ function getSiteUrl(env) {
 
 async function notifyAdminsWithRequestCard(env, postcardId, requestText, imageUrl) {
   const url = imageUrl || `${getSiteUrl(env)}/thumb/${postcardId}.jpg`;
+  const deleteKeyboard = buildDeleteInlineKeyboard([postcardId]);
   for (const adminId of getAdminList(env)) {
-    await tgSend(env, adminId, requestText);
+    const textWithActions = deleteKeyboard
+      ? requestText + '\n\n🛠 Quick action: tap button below to remove this card from gallery.'
+      : requestText;
+    await tgSend(env, adminId, textWithActions, deleteKeyboard);
     await tgSendPhoto(env, adminId, url, `ID: ${postcardId}`);
   }
 }
@@ -185,7 +341,9 @@ const MAX_CART_IDS = 20;
 
 async function notifyAdminsWithRequestCards(env, postcardIds, requestText) {
   const siteUrl = getSiteUrl(env);
-  const ids = postcardIds.slice(0, 10);
+  const ids = cleanPostcardIds(postcardIds, 10);
+  const bulkToken = await createBulkDeleteAction(env, ids);
+  const deleteKeyboard = buildDeleteInlineKeyboard(ids, bulkToken);
   const media = ids.map((id, idx) => ({
     type: 'photo',
     media: `${siteUrl}/thumb/${id}.jpg`,
@@ -193,7 +351,11 @@ async function notifyAdminsWithRequestCards(env, postcardIds, requestText) {
   }));
 
   for (const adminId of getAdminList(env)) {
-    await tgSend(env, adminId, requestText);
+    const textWithActions = deleteKeyboard
+      ? requestText +
+        '\n\n🛠 Quick action: tap ID to remove one card, or Delete all to remove the whole set.'
+      : requestText;
+    await tgSend(env, adminId, textWithActions, deleteKeyboard);
     if (media.length > 0) {
       const res = await tgSendMediaGroup(env, adminId, media);
       if (!res?.ok) {
@@ -354,17 +516,102 @@ async function handleTelegram(request, env) {
   if (!secret || secret !== env.TG_WEBHOOK_SECRET) return text('unauthorized', 401);
 
   const update = await request.json().catch(() => ({}));
+  const admins = getAdminList(env);
+
+  const callback = update?.callback_query;
+  if (callback) {
+    const fromId = String(callback.from?.id ?? '');
+    const chatId = String(callback.message?.chat?.id ?? fromId);
+    const isAdmin = admins.includes(fromId) || admins.includes(chatId);
+
+    if (!isAdmin) {
+      await tgApi(env, 'answerCallbackQuery', {
+        callback_query_id: callback.id,
+        text: 'Not authorized',
+        show_alert: false,
+      });
+      return json({ ok: true });
+    }
+
+    const data = String(callback.data || '');
+    const singleMatch = data.match(/^del:([0-9a-z]{4,12})$/i);
+    const bulkMatch = data.match(/^delall:([0-9a-z]{6,16})$/i);
+
+    if (singleMatch) {
+      const id = singleMatch[1].toLowerCase();
+      const result = await deleteCardIfExists(env, id);
+
+      await tgApi(env, 'answerCallbackQuery', {
+        callback_query_id: callback.id,
+        text: result.deleted ? `Removed: ${id}` : `Already removed: ${id}`,
+        show_alert: false,
+      });
+      if (result.deleted) {
+        await tgSend(env, chatId, callbackNoticeText(`🗑️ Removed from gallery: ${id}`, callback));
+      }
+      return json({ ok: true });
+    }
+
+    if (bulkMatch) {
+      const token = bulkMatch[1];
+      const action = await dbGetAdminAction(env, token);
+      if (!action || isActionExpired(action)) {
+        if (action) await dbDeleteAdminAction(env, token);
+        await tgApi(env, 'answerCallbackQuery', {
+          callback_query_id: callback.id,
+          text: 'Action expired. Please use a fresh request message.',
+          show_alert: false,
+        });
+        return json({ ok: true });
+      }
+
+      const ids = parseBulkDeleteIds(action);
+      await dbDeleteAdminAction(env, token);
+
+      if (!ids.length) {
+        await tgApi(env, 'answerCallbackQuery', {
+          callback_query_id: callback.id,
+          text: 'No valid postcard IDs in this action.',
+          show_alert: false,
+        });
+        return json({ ok: true });
+      }
+
+      const results = [];
+      for (const id of ids) {
+        results.push(await deleteCardIfExists(env, id));
+      }
+
+      const removedCount = results.filter((x) => x.deleted).length;
+      await tgApi(env, 'answerCallbackQuery', {
+        callback_query_id: callback.id,
+        text: `Removed ${removedCount}/${results.length}`,
+        show_alert: false,
+      });
+      await tgSend(env, chatId, callbackNoticeText(summarizeBulkDelete(results), callback));
+      return json({ ok: true });
+    }
+
+    if (!singleMatch && !bulkMatch) {
+      await tgApi(env, 'answerCallbackQuery', {
+        callback_query_id: callback.id,
+        text: 'Unknown action',
+        show_alert: false,
+      });
+      return json({ ok: true });
+    }
+  }
+
   const msg = update?.message;
   if (!msg) return json({ ok: true });
 
   const chatId = String(msg.chat?.id ?? '');
   const username = msg.from?.username ? `@${msg.from.username}` : '(no username)';
-
-  const admins = getAdminList(env);
   const isAdmin = admins.includes(chatId);
+  const msgText = typeof msg.text === 'string' ? normalizeAdminText(msg.text) : '';
 
   // /myid for everyone
-  if (typeof msg.text === 'string' && msg.text.trim() === '/myid') {
+  if (msgText === '/myid') {
     await tgSend(env, chatId, `Your chat_id: ${chatId}\nusername: ${username}`);
     if (env.ADMIN_CHAT_ID) {
       await tgSend(env, String(env.ADMIN_CHAT_ID), `👤 /myid from ${username}: chat_id=${chatId}`);
@@ -373,8 +620,8 @@ async function handleTelegram(request, env) {
   }
 
   // User clicked from website: /start pick_<id>
-  if (typeof msg.text === 'string' && msg.text.startsWith('/start')) {
-    const m = msg.text.match(/pick_([0-9a-z]+)/i);
+  if (msgText.startsWith('/start')) {
+    const m = msgText.match(/pick_([0-9a-z]+)/i);
     if (m && !isAdmin) {
       const pickedId = m[1];
       await notifyAdmins(
@@ -390,8 +637,8 @@ async function handleTelegram(request, env) {
   }
 
   // Admin commands
-  if (isAdmin && typeof msg.text === 'string' && msg.text.startsWith('/')) {
-    const parts = msg.text.trim().split(/\s+/);
+  if (isAdmin && msgText.startsWith('/')) {
+    const parts = msgText.trim().split(/\s+/);
     const cmd = parts[0].toLowerCase();
 
     if (cmd === '/help' || cmd === '/menu') {
@@ -432,18 +679,12 @@ async function handleTelegram(request, env) {
         await tgSend(env, chatId, 'Usage: /delete <id>');
         return json({ ok: true });
       }
-
-      const card = await dbGetCard(env, id);
-      if (!card) {
+      const result = await deleteCardIfExists(env, String(id).toLowerCase());
+      if (!result.deleted) {
         await tgSend(env, chatId, `Not found: ${id}`);
         return json({ ok: true });
       }
-
-      await env.BUCKET.delete(card.image_key);
-      await env.BUCKET.delete(card.thumb_key);
-      await dbDeleteCard(env, id);
-
-      await tgSend(env, chatId, `🗑️ Deleted: ${id}`);
+      await tgSend(env, chatId, `🗑️ Deleted: ${result.id}`);
       return json({ ok: true });
     }
 
