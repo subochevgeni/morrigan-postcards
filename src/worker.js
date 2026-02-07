@@ -537,67 +537,76 @@ async function handleTelegram(request, env) {
     const singleMatch = data.match(/^del:([0-9a-z]{4,12})$/i);
     const bulkMatch = data.match(/^delall:([0-9a-z]{6,16})$/i);
 
-    if (singleMatch) {
-      const id = singleMatch[1].toLowerCase();
-      const result = await deleteCardIfExists(env, id);
-
-      await tgApi(env, 'answerCallbackQuery', {
-        callback_query_id: callback.id,
-        text: result.deleted ? `Removed: ${id}` : `Already removed: ${id}`,
-        show_alert: false,
-      });
-      if (result.deleted) {
-        await tgSend(env, chatId, callbackNoticeText(`🗑️ Removed from gallery: ${id}`, callback));
-      }
-      return json({ ok: true });
-    }
-
-    if (bulkMatch) {
-      const token = bulkMatch[1];
-      const action = await dbGetAdminAction(env, token);
-      if (!action || isActionExpired(action)) {
-        if (action) await dbDeleteAdminAction(env, token);
-        await tgApi(env, 'answerCallbackQuery', {
-          callback_query_id: callback.id,
-          text: 'Action expired. Please use a fresh request message.',
-          show_alert: false,
-        });
-        return json({ ok: true });
-      }
-
-      const ids = parseBulkDeleteIds(action);
-      await dbDeleteAdminAction(env, token);
-
-      if (!ids.length) {
-        await tgApi(env, 'answerCallbackQuery', {
-          callback_query_id: callback.id,
-          text: 'No valid postcard IDs in this action.',
-          show_alert: false,
-        });
-        return json({ ok: true });
-      }
-
-      const results = [];
-      for (const id of ids) {
-        results.push(await deleteCardIfExists(env, id));
-      }
-
-      const removedCount = results.filter((x) => x.deleted).length;
-      await tgApi(env, 'answerCallbackQuery', {
-        callback_query_id: callback.id,
-        text: `Removed ${removedCount}/${results.length}`,
-        show_alert: false,
-      });
-      await tgSend(env, chatId, callbackNoticeText(summarizeBulkDelete(results), callback));
-      return json({ ok: true });
-    }
-
     if (!singleMatch && !bulkMatch) {
       await tgApi(env, 'answerCallbackQuery', {
         callback_query_id: callback.id,
         text: 'Unknown action',
         show_alert: false,
       });
+      return json({ ok: true });
+    }
+
+    // Acknowledge immediately to stop Telegram loading spinner.
+    await tgApi(env, 'answerCallbackQuery', {
+      callback_query_id: callback.id,
+      text: 'Processing delete...',
+      show_alert: false,
+    });
+
+    try {
+      if (singleMatch) {
+        const id = singleMatch[1].toLowerCase();
+        const result = await deleteCardIfExists(env, id);
+        const msg = result.deleted
+          ? callbackNoticeText(`🗑️ Removed from gallery: ${id}`, callback)
+          : callbackNoticeText(`⚠️ Could not remove ${id}: already missing.`, callback);
+        await tgSend(env, chatId, msg);
+        return json({ ok: true });
+      }
+
+      if (bulkMatch) {
+        const token = bulkMatch[1];
+        const action = await dbGetAdminAction(env, token);
+        if (!action || isActionExpired(action)) {
+          if (action) await dbDeleteAdminAction(env, token);
+          await tgSend(
+            env,
+            chatId,
+            callbackNoticeText(
+              '⚠️ Bulk delete action expired. Open a fresh request message and try again.',
+              callback
+            )
+          );
+          return json({ ok: true });
+        }
+
+        const ids = parseBulkDeleteIds(action);
+        await dbDeleteAdminAction(env, token);
+
+        if (!ids.length) {
+          await tgSend(
+            env,
+            chatId,
+            callbackNoticeText('⚠️ Bulk delete action has no valid IDs.', callback)
+          );
+          return json({ ok: true });
+        }
+
+        const results = [];
+        for (const id of ids) {
+          results.push(await deleteCardIfExists(env, id));
+        }
+
+        await tgSend(env, chatId, callbackNoticeText(summarizeBulkDelete(results), callback));
+        return json({ ok: true });
+      }
+    } catch (e) {
+      console.log('callback action failed', e);
+      await tgSend(
+        env,
+        chatId,
+        callbackNoticeText('❌ Delete action failed. Try again or use /delete <id>.', callback)
+      );
       return json({ ok: true });
     }
   }

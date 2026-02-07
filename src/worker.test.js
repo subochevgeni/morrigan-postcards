@@ -768,6 +768,59 @@ describe('worker.fetch integration', () => {
         String(url).includes('/answerCallbackQuery')
       );
       expect(answerCalls).toHaveLength(1);
+      const sendMessageCalls = fetchMock.mock.calls.filter(([url]) =>
+        String(url).includes('/sendMessage')
+      );
+      expect(sendMessageCalls).toHaveLength(1);
+      const sendPayload = JSON.parse(sendMessageCalls[0][1].body);
+      expect(sendPayload.text).toContain('Removed from gallery: abc123');
+    } finally {
+      global.fetch = prevFetch;
+    }
+  });
+
+  it('sends explicit message when single delete target is already missing', async () => {
+    const db = createDbMock();
+    const env = createEnv({ db, adminChatIds: '1001' });
+
+    const fetchMock = vi.fn(async (url) => {
+      if (url.includes('/answerCallbackQuery')) return { json: async () => ({ ok: true }) };
+      if (url.includes('/sendMessage')) return { json: async () => ({ ok: true }) };
+      throw new Error(`Unexpected fetch URL: ${url}`);
+    });
+    const prevFetch = global.fetch;
+    global.fetch = fetchMock;
+
+    try {
+      const response = await worker.fetch(
+        new Request('https://example.com/tg', {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            'X-Telegram-Bot-Api-Secret-Token': env.TG_WEBHOOK_SECRET,
+          },
+          body: JSON.stringify({
+            callback_query: {
+              id: 'cb_1_missing',
+              data: 'del:abc123',
+              from: { id: 1001, username: 'admin' },
+              message: { chat: { id: 1001 } },
+            },
+          }),
+        }),
+        env
+      );
+      const data = await response.json();
+
+      expect(response.status).toBe(200);
+      expect(data).toEqual({ ok: true });
+
+      const sendMessageCalls = fetchMock.mock.calls.filter(([url]) =>
+        String(url).includes('/sendMessage')
+      );
+      expect(sendMessageCalls).toHaveLength(1);
+      const sendPayload = JSON.parse(sendMessageCalls[0][1].body);
+      expect(sendPayload.text).toContain('already missing');
     } finally {
       global.fetch = prevFetch;
     }
@@ -847,7 +900,14 @@ describe('worker.fetch integration', () => {
       );
       expect(answerCalls).toHaveLength(1);
       const answerPayload = JSON.parse(answerCalls[0][1].body);
-      expect(answerPayload.text).toBe('Removed 2/3');
+      expect(answerPayload.text).toBe('Processing delete...');
+
+      const sendMessageCalls = fetchMock.mock.calls.filter(([url]) =>
+        String(url).includes('/sendMessage')
+      );
+      expect(sendMessageCalls).toHaveLength(1);
+      const sendPayload = JSON.parse(sendMessageCalls[0][1].body);
+      expect(sendPayload.text).toContain('Bulk delete done: removed 2/3');
     } finally {
       global.fetch = prevFetch;
     }
