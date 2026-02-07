@@ -1,13 +1,14 @@
 {
   "name": "hello",
   "version": "1.0.0",
-  "description": "",
+  "description": "Cloudflare Workers postcard exchange portal with Telegram-based admin panel.",
   "main": "index.js",
   "type": "module",
   "scripts": {
     "test": "vitest run",
     "test:watch": "vitest",
     "lint": "eslint . --ext .js",
+    "check": "npm run lint && npm test",
     "format": "prettier --write .",
     "test:coverage": "vitest run --coverage"
   },
@@ -15,7 +16,13 @@
     "type": "git",
     "url": "git+https://github.com/subochevgeni/Hello.git"
   },
-  "keywords": [],
+  "keywords": [
+    "cloudflare-workers",
+    "d1",
+    "r2",
+    "telegram-bot",
+    "postcards"
+  ],
   "author": "",
   "license": "ISC",
   "bugs": {

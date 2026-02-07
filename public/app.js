@@ -60,6 +60,19 @@ let hasRenderedGrid = false;
 let gridHasLoadError = false;
 
 const AUTO_REFRESH_MS = 5000;
+const MODAL_CLOSE_DELAY_MS = 1200;
+const TURNSTILE_RESET_DELAY_MS = 200;
+const STATUS_MESSAGES = {
+  missingName: '❌ Please enter your nickname / handle.',
+  missingTurnstile: '❌ Please complete the anti-spam check (Turnstile).',
+  pendingCard: '❌ This postcard is currently pending another request.',
+  missingSelection: '❌ Please select a postcard or add some to the cart first.',
+  deduped: 'ℹ️ Similar request was already sent recently. We will still review it.',
+  sent: '✅ Request sent! We will review it and contact you.',
+  notFound: '❌ Sorry — this postcard is no longer available.',
+  antiSpamFailed: '❌ Anti-spam failed. Please retry.',
+  networkError: '❌ Network error. Please try again.',
+};
 
 function makeItemsFingerprint(list) {
   return list
@@ -94,6 +107,36 @@ function resetTurnstile() {
 function getTurnstileToken() {
   const el = document.querySelector('[name="cf-turnstile-response"]');
   return el ? String(el.value || '').trim() : '';
+}
+
+function resetTurnstileLater(delay = TURNSTILE_RESET_DELAY_MS) {
+  setTimeout(resetTurnstile, delay);
+}
+
+function closeModalLater(delay = MODAL_CLOSE_DELAY_MS) {
+  setTimeout(closeModal, delay);
+}
+
+function handleRequestSuccess(isCart, deduped) {
+  reqStatus.textContent = deduped ? STATUS_MESSAGES.deduped : STATUS_MESSAGES.sent;
+  if (isCart) {
+    cartIds = [];
+    updateCartUI();
+  }
+  closeModalLater();
+  resetTurnstileLater();
+}
+
+function handleRequestFailure(status, responseText = '') {
+  if (status === 404) {
+    reqStatus.textContent = STATUS_MESSAGES.notFound;
+  } else if (status === 403) {
+    reqStatus.textContent = STATUS_MESSAGES.antiSpamFailed;
+  } else {
+    reqStatus.textContent =
+      '❌ Failed to send. ' + (responseText ? `(${responseText})` : 'Please try again.');
+  }
+  resetTurnstileLater();
 }
 
 function openModal(item) {
@@ -416,23 +459,23 @@ form.addEventListener('submit', async (e) => {
   const message = reqMsg.value.trim();
 
   if (!name) {
-    reqStatus.textContent = '❌ Please enter your nickname / handle.';
+    reqStatus.textContent = STATUS_MESSAGES.missingName;
     return;
   }
 
   const token = getTurnstileToken();
   if (!token) {
-    reqStatus.textContent = '❌ Please complete the anti-spam check (Turnstile).';
+    reqStatus.textContent = STATUS_MESSAGES.missingTurnstile;
     return;
   }
 
   const isCart = modalMode === 'cart' && cartIds.length > 0;
   if (!isCart && currentCardStatus === 'pending') {
-    reqStatus.textContent = '❌ This postcard is currently pending another request.';
+    reqStatus.textContent = STATUS_MESSAGES.pendingCard;
     return;
   }
   if (!isCart && !currentId) {
-    reqStatus.textContent = '❌ Please select a postcard or add some to the cart first.';
+    reqStatus.textContent = STATUS_MESSAGES.missingSelection;
     return;
   }
 
@@ -457,37 +500,15 @@ form.addEventListener('submit', async (e) => {
 
     if (r.ok) {
       const payloadData = await r.json().catch(() => ({}));
-      if (payloadData?.deduped) {
-        reqStatus.textContent =
-          'ℹ️ Similar request was already sent recently. We will still review it.';
-      } else {
-        reqStatus.textContent = '✅ Request sent! We will review it and contact you.';
-      }
-      if (isCart) {
-        cartIds = [];
-        updateCartUI();
-        setTimeout(closeModal, 1200);
-      } else {
-        setTimeout(closeModal, 1200);
-      }
-      setTimeout(() => {
-        resetTurnstile();
-      }, 200);
-    } else if (r.status === 404) {
-      reqStatus.textContent = '❌ Sorry — this postcard is no longer available.';
-      setTimeout(resetTurnstile, 200);
-    } else if (r.status === 403) {
-      reqStatus.textContent = '❌ Anti-spam failed. Please retry.';
-      setTimeout(resetTurnstile, 200);
+      handleRequestSuccess(isCart, Boolean(payloadData?.deduped));
     } else {
       const t = await r.text().catch(() => '');
-      reqStatus.textContent = '❌ Failed to send. ' + (t ? `(${t})` : 'Please try again.');
-      setTimeout(resetTurnstile, 200);
+      handleRequestFailure(r.status, t);
     }
   } catch (err) {
     console.error('Request submission error:', err);
-    reqStatus.textContent = '❌ Network error. Please try again.';
-    setTimeout(resetTurnstile, 200);
+    reqStatus.textContent = STATUS_MESSAGES.networkError;
+    resetTurnstileLater();
   } finally {
     reqSubmit.disabled = false;
   }

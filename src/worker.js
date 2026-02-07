@@ -70,12 +70,12 @@ async function tgSend(env, chatId, msg, replyMarkup = null) {
 }
 
 async function tgSendPhoto(env, chatId, photoUrl, caption) {
-  // Telegram умеет тянуть фото по HTTP URL. :contentReference[oaicite:5]{index=5}
+  // Telegram can fetch the photo directly from an HTTP URL.
   await tgApi(env, 'sendPhoto', { chat_id: chatId, photo: photoUrl, caption });
 }
 
 async function tgSendMediaGroup(env, chatId, media) {
-  // Метод sendMediaGroup существует в Bot API (альбомы). :contentReference[oaicite:6]{index=6}
+  // Send multiple images as a single album.
   return tgApi(env, 'sendMediaGroup', { chat_id: chatId, media });
 }
 
