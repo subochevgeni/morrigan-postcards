@@ -987,4 +987,67 @@ describe('worker.fetch integration', () => {
       global.fetch = prevFetch;
     }
   });
+
+  it('sets webhook with callback_query updates via admin command', async () => {
+    const env = createEnv({ adminChatIds: '1001' });
+    const fetchMock = vi.fn(async (url, init) => {
+      if (url.includes('/setWebhook')) return { json: async () => ({ ok: true, result: true }) };
+      if (url.includes('/getWebhookInfo')) {
+        return {
+          json: async () => ({
+            ok: true,
+            result: {
+              url: 'https://example.com/tg',
+              pending_update_count: 0,
+              max_connections: 40,
+            },
+          }),
+        };
+      }
+      if (url.includes('/sendMessage')) return { json: async () => ({ ok: true }) };
+      throw new Error(`Unexpected fetch URL: ${url} ${init ? JSON.stringify(init) : ''}`);
+    });
+    const prevFetch = global.fetch;
+    global.fetch = fetchMock;
+
+    try {
+      const response = await worker.fetch(
+        new Request('https://example.com/tg', {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            'X-Telegram-Bot-Api-Secret-Token': env.TG_WEBHOOK_SECRET,
+          },
+          body: JSON.stringify({
+            message: {
+              text: '/setwebhook',
+              chat: { id: 1001 },
+              from: { username: 'admin' },
+            },
+          }),
+        }),
+        env
+      );
+      expect(response.status).toBe(200);
+
+      const setWebhookCalls = fetchMock.mock.calls.filter(([url]) =>
+        String(url).includes('/setWebhook')
+      );
+      expect(setWebhookCalls).toHaveLength(1);
+      const setPayload = JSON.parse(setWebhookCalls[0][1].body);
+      expect(setPayload.url).toBe('https://example.com/tg');
+      expect(setPayload.allowed_updates).toContain('callback_query');
+      expect(setPayload.allowed_updates).toContain('message');
+      expect(setPayload.secret_token).toBe('tg-hook-secret');
+
+      const sendMessageCalls = fetchMock.mock.calls.filter(([url]) =>
+        String(url).includes('/sendMessage')
+      );
+      expect(sendMessageCalls).toHaveLength(1);
+      const sendPayload = JSON.parse(sendMessageCalls[0][1].body);
+      expect(sendPayload.text).toContain('setWebhook: ok');
+    } finally {
+      global.fetch = prevFetch;
+    }
+  });
 });

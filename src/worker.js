@@ -90,11 +90,43 @@ async function tgGetFileUrl(env, fileId) {
   return `https://api.telegram.org/file/bot${env.TG_BOT_TOKEN}/${filePath}`;
 }
 
+async function tgGetWebhookInfo(env) {
+  return tgApi(env, 'getWebhookInfo', {});
+}
+
+async function tgSetWebhook(env) {
+  const payload = {
+    url: `${getSiteUrl(env)}/tg`,
+    allowed_updates: ['message', 'callback_query'],
+    drop_pending_updates: false,
+  };
+  const secret = String(env.TG_WEBHOOK_SECRET || '').trim();
+  if (secret) payload.secret_token = secret;
+  return tgApi(env, 'setWebhook', payload);
+}
+
+function formatWebhookInfo(info) {
+  if (!info?.ok || !info.result) return '❌ Could not fetch webhook info from Telegram.';
+  const r = info.result;
+  const lines = [
+    '🔌 Webhook info',
+    `URL: ${r.url || '(not set)'}`,
+    `Pending updates: ${Number(r.pending_update_count || 0)}`,
+    `Max connections: ${Number(r.max_connections || 0)}`,
+  ];
+  if (r.last_error_message) lines.push(`Last error: ${r.last_error_message}`);
+  if (r.last_error_date) {
+    lines.push(`Last error date: ${new Date(r.last_error_date * 1000).toISOString()}`);
+  }
+  return lines.join('\n');
+}
+
 function adminKeyboard() {
   return {
     keyboard: [
       [{ text: '📊 Stats' }, { text: '🆕 Last' }],
       [{ text: '🗂️ List 20' }, { text: '🆔 My ID' }],
+      [{ text: '🔌 Webhook' }],
       [{ text: '🗑 Delete by ID' }, { text: '❓ Help' }],
     ],
     resize_keyboard: true,
@@ -114,6 +146,8 @@ function adminHelpText() {
     '/stats — how many available\n' +
     '/last — last added\n' +
     '/list [n] — last n IDs (1..200)\n' +
+    '/webhookinfo — Telegram webhook diagnostics\n' +
+    '/setwebhook — reset webhook with callback_query support\n' +
     '/delete <id> — delete postcard'
   );
 }
@@ -124,6 +158,7 @@ function normalizeAdminText(text) {
   if (t === '🆕 Last') return '/last';
   if (t === '🗂️ List 20') return '/list 20';
   if (t === '🆔 My ID') return '/myid';
+  if (t === '🔌 Webhook') return '/webhookinfo';
   if (t === '🗑 Delete by ID') return '/delete';
   if (t === '❓ Help') return '/help';
   return t;
@@ -689,6 +724,22 @@ async function handleTelegram(request, env) {
         chatId,
         ids.length ? `🗂️ Last ${ids.length} IDs:\n${ids.join('\n')}` : 'Empty.'
       );
+      return json({ ok: true });
+    }
+
+    if (cmd === '/webhookinfo') {
+      const info = await tgGetWebhookInfo(env);
+      await tgSend(env, chatId, formatWebhookInfo(info), adminKeyboard());
+      return json({ ok: true });
+    }
+
+    if (cmd === '/setwebhook') {
+      const setResult = await tgSetWebhook(env);
+      const info = await tgGetWebhookInfo(env);
+      const textOut =
+        (setResult?.ok ? '✅ setWebhook: ok\n' : '❌ setWebhook: failed\n') +
+        formatWebhookInfo(info);
+      await tgSend(env, chatId, textOut, adminKeyboard());
       return json({ ok: true });
     }
 
