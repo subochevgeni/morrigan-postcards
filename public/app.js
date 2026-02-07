@@ -49,6 +49,10 @@ let items = [];
 let currentId = null;
 let cartIds = [];
 let modalMode = 'single';
+let isLoadingCards = false;
+let autoRefreshTimer = null;
+
+const AUTO_REFRESH_MS = 15000;
 
 function updateSelectionSummary(filteredCount = null) {
   if (!selectionSummaryEl) return;
@@ -245,6 +249,9 @@ function renderCategoryFilter() {
 }
 
 async function load() {
+  if (isLoadingCards) return;
+  isLoadingCards = true;
+
   try {
     const params = new URLSearchParams({ limit: '200' });
     if (currentCategory) params.set('category', currentCategory);
@@ -255,17 +262,40 @@ async function load() {
     }
     const data = await r.json();
     items = data.items || [];
+
+    const availableIds = new Set(items.map((x) => x.id));
+    const prevCartSize = cartIds.length;
+    cartIds = cartIds.filter((id) => availableIds.has(id));
+    if (cartIds.length !== prevCartSize) updateCartUI();
+
     updateSelectionSummary(items.length);
     render();
 
     const hashId = (location.hash || '').replace('#', '').trim();
     if (hashId) {
       const found = items.find((x) => x.id === hashId);
-      if (found) openModal(found);
+      const modalClosed = modal.classList.contains('hidden');
+      if (found && modalClosed && currentId !== hashId) {
+        openModal(found);
+      } else if (!found && currentId === hashId) {
+        closeModal();
+      }
     }
   } catch (err) {
     console.error('Failed to load postcards:', err);
+  } finally {
+    isLoadingCards = false;
   }
+}
+
+function scheduleAutoRefresh() {
+  if (autoRefreshTimer) clearTimeout(autoRefreshTimer);
+  autoRefreshTimer = setTimeout(async () => {
+    if (!document.hidden) {
+      await load();
+    }
+    scheduleAutoRefresh();
+  }, AUTO_REFRESH_MS);
 }
 
 async function loadCategories() {
@@ -394,4 +424,5 @@ form.addEventListener('submit', async (e) => {
   await loadCategories();
   updateCartUI();
   load();
+  scheduleAutoRefresh();
 })();
