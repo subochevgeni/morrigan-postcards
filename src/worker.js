@@ -26,13 +26,9 @@ function normalizeCategory(caption) {
   if (!caption || typeof caption !== 'string') return 'other';
   const s = caption.trim().toLowerCase();
   if (!s) return 'other';
-  const byEn = Object.entries(CATEGORIES).find(
-    ([slug, { en }]) => en.toLowerCase() === s
-  );
+  const byEn = Object.entries(CATEGORIES).find(([, { en }]) => en.toLowerCase() === s);
   if (byEn) return byEn[0];
-  const byRu = Object.entries(CATEGORIES).find(
-    ([slug, { ru }]) => ru.toLowerCase() === s
-  );
+  const byRu = Object.entries(CATEGORIES).find(([, { ru }]) => ru.toLowerCase() === s);
   if (byRu) return byRu[0];
   if (CATEGORY_SLUGS.includes(s)) return s;
   return 'other';
@@ -125,7 +121,8 @@ function adminKeyboard() {
   return {
     keyboard: [
       [{ text: '📊 Stats' }, { text: '🆕 Last' }],
-      [{ text: '🗂️ List 20' }, { text: '🆔 My ID' }],
+      [{ text: '🗂️ List 20' }, { text: '🕘 Recent' }],
+      [{ text: '📈 Analytics' }, { text: '🆔 My ID' }],
       [{ text: '🔌 Webhook' }],
       [{ text: '🗑 Delete by ID' }, { text: '❓ Help' }],
     ],
@@ -146,6 +143,8 @@ function adminHelpText() {
     '/stats — how many available\n' +
     '/last — last added\n' +
     '/list [n] — last n IDs (1..200)\n' +
+    '/recent [n] — recent admin events\n' +
+    '/analytics [days] — aggregated counters\n' +
     '/webhookinfo — Telegram webhook diagnostics\n' +
     '/setwebhook — reset webhook with callback_query support\n' +
     '/delete <id> — delete postcard'
@@ -157,6 +156,8 @@ function normalizeAdminText(text) {
   if (t === '📊 Stats') return '/stats';
   if (t === '🆕 Last') return '/last';
   if (t === '🗂️ List 20') return '/list 20';
+  if (t === '🕘 Recent') return '/recent 15';
+  if (t === '📈 Analytics') return '/analytics 7';
   if (t === '🆔 My ID') return '/myid';
   if (t === '🔌 Webhook') return '/webhookinfo';
   if (t === '🗑 Delete by ID') return '/delete';
@@ -200,6 +201,8 @@ function buildDeleteInlineKeyboard(ids, bulkToken = null) {
 }
 
 const ADMIN_ACTION_TTL_MS = 1000 * 60 * 60 * 24;
+const CARD_RESERVE_MS = 1000 * 60 * 15;
+const REQUEST_DEDUP_MS = 1000 * 60 * 20;
 
 async function dbCreateAdminAction(env, { token, actionType, payloadJson, createdAt, expiresAt }) {
   await env.DB.prepare(
@@ -264,13 +267,20 @@ async function createBulkDeleteAction(env, ids) {
   return null;
 }
 
-async function deleteCardIfExists(env, id) {
+async function deleteCardIfExists(env, id, meta = {}) {
   const card = await dbGetCard(env, id);
   if (!card) return { id, deleted: false };
 
   await env.BUCKET.delete(card.image_key);
   await env.BUCKET.delete(card.thumb_key);
   await dbDeleteCard(env, id);
+  await addAdminEvent(env, {
+    action: 'delete_card',
+    ids: [id],
+    adminChatId: meta.adminChatId || '',
+    details: meta.details || null,
+  });
+  await trackAnalytics(env, 'card_deleted');
   return { id, deleted: true };
 }
 
@@ -302,6 +312,161 @@ function summarizeBulkDelete(results) {
 function callbackNoticeText(prefix, callback) {
   const user = callback?.from?.username ? `@${callback.from.username}` : '(no username)';
   return `${prefix} by ${user}`;
+}
+
+function toUtcDateKey(ts = Date.now()) {
+  return new Date(ts).toISOString().slice(0, 10);
+}
+
+async function trackAnalytics(env, eventName, inc = 1, ts = Date.now()) {
+  const safeName = String(eventName || '').trim().slice(0, 64);
+  if (!safeName || !Number.isFinite(inc) || inc <= 0) return;
+  try {
+    await env.DB.prepare(
+      `INSERT INTO analytics_daily (event_date, event_name, cnt)
+       VALUES (?1, ?2, ?3)
+       ON CONFLICT(event_date, event_name)
+       DO UPDATE SET cnt = cnt + excluded.cnt`
+    )
+      .bind(toUtcDateKey(ts), safeName, inc)
+      .run();
+  } catch (e) {
+    console.log('analytics write skipped', e);
+  }
+}
+
+async function addAdminEvent(env, { action, ids = [], adminChatId = '', details = null, ts = Date.now() }) {
+  const idsJson = JSON.stringify(cleanPostcardIds(Array.isArray(ids) ? ids : [ids], 20));
+  const detailsJson = details ? JSON.stringify(details) : null;
+  try {
+    await env.DB.prepare(
+      'INSERT INTO admin_events (action, ids_json, admin_chat_id, details_json, created_at) VALUES (?1, ?2, ?3, ?4, ?5)'
+    )
+      .bind(String(action || '').slice(0, 64), idsJson, String(adminChatId || ''), detailsJson, ts)
+      .run();
+  } catch (e) {
+    console.log('admin event write skipped', e);
+  }
+}
+
+async function listAdminEvents(env, limit = 15) {
+  const safeLimit = Math.min(Math.max(Number(limit) || 15, 1), 50);
+  try {
+    const { results } = await env.DB.prepare(
+      'SELECT action, ids_json, admin_chat_id, details_json, created_at FROM admin_events ORDER BY created_at DESC LIMIT ?1'
+    )
+      .bind(safeLimit)
+      .all();
+    return results || [];
+  } catch (e) {
+    console.log('admin events read skipped', e);
+    return [];
+  }
+}
+
+function formatAdminEvents(events) {
+  if (!events.length) return 'No recent admin events.';
+  const lines = ['🕘 Recent admin events'];
+  for (const ev of events) {
+    let ids = [];
+    try {
+      ids = JSON.parse(ev.ids_json || '[]');
+    } catch {
+      ids = [];
+    }
+    lines.push(
+      `${REQUEST_VISUAL_DIVIDER}\n` +
+        `${formatRequestTimestamp(ev.created_at)}\n` +
+        `Action: ${ev.action}\n` +
+        `IDs: ${ids.length ? ids.join(', ') : '—'}\n` +
+        `Admin: ${ev.admin_chat_id || '—'}`
+    );
+  }
+  return lines.join('\n');
+}
+
+async function readAnalytics(env, days = 7) {
+  const safeDays = Math.min(Math.max(Number(days) || 7, 1), 60);
+  const from = toUtcDateKey(Date.now() - safeDays * 24 * 60 * 60 * 1000);
+  try {
+    const { results } = await env.DB.prepare(
+      `SELECT event_name, SUM(cnt) AS total
+       FROM analytics_daily
+       WHERE event_date >= ?1
+       GROUP BY event_name
+       ORDER BY total DESC`
+    )
+      .bind(from)
+      .all();
+    return results || [];
+  } catch (e) {
+    console.log('analytics read skipped', e);
+    return [];
+  }
+}
+
+function formatAnalytics(rows, days) {
+  if (!rows.length) return `📈 Analytics (${days}d)\nNo data yet.`;
+  return `📈 Analytics (${days}d)\n` + rows.map((r) => `• ${r.event_name}: ${r.total}`).join('\n');
+}
+
+async function releaseExpiredReservations(env, now = Date.now()) {
+  try {
+    await env.DB.prepare(
+      "UPDATE cards SET status='available', pending_until=NULL WHERE status='pending' AND pending_until IS NOT NULL AND pending_until<=?1"
+    )
+      .bind(now)
+      .run();
+  } catch (e) {
+    console.log('reservation cleanup skipped', e);
+  }
+}
+
+async function reserveCards(env, ids, now = Date.now()) {
+  const clean = cleanPostcardIds(ids, MAX_CART_IDS);
+  if (!clean.length) return;
+  const until = now + CARD_RESERVE_MS;
+  try {
+    for (const id of clean) {
+      await env.DB.prepare(
+        "UPDATE cards SET status='pending', pending_until=?2 WHERE id=?1 AND status='available'"
+      )
+        .bind(id, until)
+        .run();
+    }
+    await trackAnalytics(env, 'cards_reserved', clean.length, now);
+  } catch (e) {
+    console.log('reserve cards skipped', e);
+  }
+}
+
+async function isDuplicateRequest(env, name, ids, now = Date.now()) {
+  const clean = cleanPostcardIds(ids, MAX_CART_IDS);
+  if (!name || !clean.length) return false;
+  const cutoff = now - REQUEST_DEDUP_MS;
+  try {
+    const { results } = await env.DB.prepare(
+      `SELECT created_at, group_concat(postcard_id) AS ids_csv
+       FROM requests
+       WHERE name=?1 AND created_at>=?2
+       GROUP BY created_at
+       ORDER BY created_at DESC
+       LIMIT 30`
+    )
+      .bind(name, cutoff)
+      .all();
+
+    for (const row of results || []) {
+      const got = Array.from(
+        new Set(String(row.ids_csv || '').split(',').map((x) => x.trim().toLowerCase()).filter(Boolean))
+      ).sort();
+      const want = [...clean].sort();
+      if (got.length === want.length && got.every((x, i) => x === want[i])) return true;
+    }
+  } catch (e) {
+    console.log('duplicate check skipped', e);
+  }
+  return false;
 }
 
 async function dbGetCard(env, id) {
@@ -478,6 +643,7 @@ async function verifyTurnstile(request, env, token) {
 
 async function handleWebRequest(request, env) {
   if (request.method !== 'POST') return text('method not allowed', 405);
+  await releaseExpiredReservations(env);
 
   let body;
   try {
@@ -513,6 +679,11 @@ async function handleWebRequest(request, env) {
       .filter((x) => /^[0-9a-z]{4,12}$/i.test(x))
       .slice(0, MAX_CART_IDS);
     if (postcardIds.length === 0) return text('bad id', 400);
+    const now = Date.now();
+    if (await isDuplicateRequest(env, name, postcardIds, now)) {
+      await trackAnalytics(env, 'request_deduped');
+      return json({ ok: true, deduped: true });
+    }
 
     for (const id of postcardIds) {
       const card = await env.DB.prepare("SELECT id FROM cards WHERE id=?1 AND status='available'")
@@ -521,7 +692,6 @@ async function handleWebRequest(request, env) {
       if (!card) return text('not found', 404);
     }
 
-    const now = Date.now();
     for (const postcardId of postcardIds) {
       await env.DB.prepare(
         'INSERT INTO requests (postcard_id, name, message, created_at) VALUES (?1, ?2, ?3, ?4)'
@@ -538,12 +708,19 @@ async function handleWebRequest(request, env) {
       createdAt: now,
     });
 
+    await reserveCards(env, postcardIds, now);
+    await trackAnalytics(env, 'request_sent', postcardIds.length, now);
     await notifyAdminsWithRequestCards(env, postcardIds, requestText);
     return json({ ok: true });
   }
 
   const postcardId = String(singleId || '').trim().toLowerCase();
   if (!/^[0-9a-z]{4,12}$/i.test(postcardId)) return text('bad id', 400);
+  const now = Date.now();
+  if (await isDuplicateRequest(env, name, [postcardId], now)) {
+    await trackAnalytics(env, 'request_deduped');
+    return json({ ok: true, deduped: true });
+  }
 
   const card = await env.DB.prepare("SELECT id FROM cards WHERE id=?1 AND status='available'")
     .bind(postcardId)
@@ -551,7 +728,6 @@ async function handleWebRequest(request, env) {
 
   if (!card) return text('not found', 404);
 
-  const now = Date.now();
   await env.DB.prepare(
     'INSERT INTO requests (postcard_id, name, message, created_at) VALUES (?1, ?2, ?3, ?4)'
   )
@@ -566,6 +742,8 @@ async function handleWebRequest(request, env) {
     createdAt: now,
   });
 
+  await reserveCards(env, [postcardId], now);
+  await trackAnalytics(env, 'request_sent', 1, now);
   await notifyAdminsWithRequestCard(env, postcardId, requestText);
 
   return json({ ok: true });
@@ -628,7 +806,10 @@ async function handleTelegram(request, env) {
     try {
       if (singleMatch) {
         const id = singleMatch[1].toLowerCase();
-        const result = await deleteCardIfExists(env, id);
+        const result = await deleteCardIfExists(env, id, {
+          adminChatId: chatId,
+          details: { via: 'callback_single' },
+        });
         const msg = result.deleted
           ? callbackNoticeText(`🗑️ Removed from gallery: ${id}`, callback)
           : callbackNoticeText(`⚠️ Could not remove ${id}: already missing.`, callback);
@@ -666,9 +847,21 @@ async function handleTelegram(request, env) {
 
         const results = [];
         for (const id of ids) {
-          results.push(await deleteCardIfExists(env, id));
+          results.push(
+            await deleteCardIfExists(env, id, {
+              adminChatId: chatId,
+              details: { via: 'callback_bulk' },
+            })
+          );
         }
-
+        const removedCount = results.filter((x) => x.deleted).length;
+        await addAdminEvent(env, {
+          action: 'bulk_delete',
+          ids,
+          adminChatId: chatId,
+          details: { removed: removedCount, total: results.length },
+        });
+        await trackAnalytics(env, 'bulk_delete', 1);
         await tgSend(env, chatId, callbackNoticeText(summarizeBulkDelete(results), callback));
         return json({ ok: true });
       }
@@ -751,6 +944,22 @@ async function handleTelegram(request, env) {
       return json({ ok: true });
     }
 
+    if (cmd === '/recent') {
+      const nRaw = Number(parts[1] || '15');
+      const n = Number.isFinite(nRaw) ? Math.min(Math.max(nRaw, 1), 50) : 15;
+      const events = await listAdminEvents(env, n);
+      await tgSend(env, chatId, formatAdminEvents(events), adminKeyboard());
+      return json({ ok: true });
+    }
+
+    if (cmd === '/analytics') {
+      const dRaw = Number(parts[1] || '7');
+      const days = Number.isFinite(dRaw) ? Math.min(Math.max(dRaw, 1), 60) : 7;
+      const rows = await readAnalytics(env, days);
+      await tgSend(env, chatId, formatAnalytics(rows, days), adminKeyboard());
+      return json({ ok: true });
+    }
+
     if (cmd === '/webhookinfo') {
       const info = await tgGetWebhookInfo(env);
       await tgSend(env, chatId, formatWebhookInfo(info), adminKeyboard());
@@ -773,7 +982,10 @@ async function handleTelegram(request, env) {
         await tgSend(env, chatId, 'Usage: /delete <id>');
         return json({ ok: true });
       }
-      const result = await deleteCardIfExists(env, String(id).toLowerCase());
+      const result = await deleteCardIfExists(env, String(id).toLowerCase(), {
+        adminChatId: chatId,
+        details: { via: 'command_delete' },
+      });
       if (!result.deleted) {
         await tgSend(env, chatId, `Not found: ${id}`);
         return json({ ok: true });
@@ -824,6 +1036,13 @@ async function handleTelegram(request, env) {
     await env.BUCKET.put(thumbKey, thumbBuf, { httpMetadata: { contentType: 'image/jpeg' } });
 
     await dbInsertCard(env, { id, createdAt: Date.now(), category, imageKey: fullKey, thumbKey });
+    await addAdminEvent(env, {
+      action: 'add_card',
+      ids: [id],
+      adminChatId: chatId,
+      details: { category },
+    });
+    await trackAnalytics(env, 'card_added');
 
     await tgSend(
       env,
@@ -840,14 +1059,15 @@ async function handleTelegram(request, env) {
 }
 
 async function listCards(env, url) {
+  await releaseExpiredReservations(env);
   const limitRaw = Number(url.searchParams.get('limit') || '200');
   const limit = Number.isFinite(limitRaw) ? Math.min(Math.max(limitRaw, 1), 200) : 200;
   const category = String(url.searchParams.get('category') || '').trim().toLowerCase();
 
   const validCategory = category && CATEGORY_SLUGS.includes(category) ? category : null;
   const sql = validCategory
-    ? "SELECT id, created_at, category FROM cards WHERE status='available' AND category=?1 ORDER BY created_at DESC LIMIT ?2"
-    : "SELECT id, created_at, category FROM cards WHERE status='available' ORDER BY created_at DESC LIMIT ?1";
+    ? "SELECT id, created_at, category, status, pending_until FROM cards WHERE status IN ('available','pending') AND category=?1 ORDER BY created_at DESC LIMIT ?2"
+    : "SELECT id, created_at, category, status, pending_until FROM cards WHERE status IN ('available','pending') ORDER BY created_at DESC LIMIT ?1";
 
   const stmt = validCategory
     ? env.DB.prepare(sql).bind(validCategory, limit)
@@ -860,6 +1080,8 @@ async function listCards(env, url) {
         id: r.id,
         createdAt: r.created_at,
         category: r.category || 'other',
+        status: r.status === 'pending' ? 'pending' : 'available',
+        pendingUntil: Number(r.pending_until || 0) || null,
         thumbUrl: `/thumb/${r.id}.jpg`,
         imageUrl: `/img/${r.id}.jpg`,
       })),
@@ -892,6 +1114,14 @@ async function serveImage(env, key) {
   headers.set('cache-control', 'public, max-age=31536000, immutable');
 
   return new Response(obj.body, { headers });
+}
+
+async function runMaintenance(env) {
+  const now = Date.now();
+  await releaseExpiredReservations(env, now);
+  await dbDeleteExpiredAdminActions(env, now).catch((e) =>
+    console.log('admin action cleanup failed', e)
+  );
 }
 
 export default {
@@ -931,5 +1161,9 @@ export default {
 
     // Static assets from public/
     return env.ASSETS.fetch(request);
+  },
+
+  async scheduled(_event, env) {
+    await runMaintenance(env);
   },
 };

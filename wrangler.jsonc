@@ -19,5 +19,8 @@
   ],
   "vars": {
     "ADMIN_CHAT_ID": "50919507"
+  },
+  "triggers": {
+    "crons": ["*/15 * * * *"]
   }
 }

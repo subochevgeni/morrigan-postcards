@@ -37,6 +37,9 @@ const modalCartList = $('modalCartList');
 const copyBtn = $('copy');
 const cartBtn = $('cartBtn');
 const cartCountEl = $('cartCount');
+const mobileCta = $('mobileCta');
+const mobileCtaCount = $('mobileCtaCount');
+const mobileOpenCart = $('mobileOpenCart');
 
 const form = $('reqForm');
 const reqName = $('reqName');
@@ -47,6 +50,7 @@ const reqSubmit = $('reqSubmit');
 
 let items = [];
 let currentId = null;
+let currentCardStatus = 'available';
 let cartIds = [];
 let modalMode = 'single';
 let isLoadingCards = false;
@@ -59,7 +63,9 @@ function updateSelectionSummary(filteredCount = null) {
   const visible = filteredCount == null ? items.length : filteredCount;
   const suffix = visible === 1 ? '' : 's';
   const pickedSuffix = cartIds.length === 1 ? '' : 's';
-  selectionSummaryEl.textContent = `${visible} postcard${suffix} shown · ${cartIds.length} selected postcard${pickedSuffix}`;
+  const pendingCount = items.filter((x) => x.status === 'pending').length;
+  const pendingSuffix = pendingCount === 1 ? '' : 's';
+  selectionSummaryEl.textContent = `${visible} postcard${suffix} shown · ${cartIds.length} selected postcard${pickedSuffix}${pendingCount ? ` · ${pendingCount} pending postcard${pendingSuffix}` : ''}`;
 }
 
 function resetTurnstile() {
@@ -89,6 +95,7 @@ function openModal(item) {
 
   modalImg.src = item.imageUrl;
   modalId.textContent = item.id;
+  currentCardStatus = item.status || 'available';
 
   copyBtn.onclick = async () => {
     await navigator.clipboard.writeText(item.id);
@@ -125,6 +132,13 @@ function updateCartUI() {
         : `Open selected postcards (${cartIds.length})`
     );
   }
+  if (mobileCta && mobileCtaCount && mobileOpenCart) {
+    const hasItems = cartIds.length > 0;
+    mobileCtaCount.textContent = String(cartIds.length);
+    mobileCta.classList.toggle('hidden', !hasItems);
+    mobileCta.setAttribute('aria-hidden', hasItems ? 'false' : 'true');
+    mobileOpenCart.disabled = !hasItems;
+  }
   updateSelectionSummary();
 }
 
@@ -150,6 +164,7 @@ function renderCartModalContent() {
 function openCartModal() {
   modalMode = 'cart';
   currentId = null;
+  currentCardStatus = 'available';
   if (modalSingle) modalSingle.classList.add('hidden');
   if (modalCart) {
     modalCart.classList.remove('hidden');
@@ -177,9 +192,29 @@ modal.onclick = (e) => {
   if (e.target === modal) closeModal();
 };
 if (cartBtn) cartBtn.onclick = () => openCartModal();
+if (mobileOpenCart) mobileOpenCart.onclick = () => openCartModal();
 window.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') closeModal();
 });
+
+function getStatusMeta(item) {
+  if (item.status === 'pending') {
+    return {
+      badgeClass: 'pending',
+      badgeText: 'Pending',
+      canSelect: false,
+      buttonClass: 'is-pending',
+      buttonLabel: 'Pending',
+    };
+  }
+  return {
+    badgeClass: 'available',
+    badgeText: 'Available',
+    canSelect: true,
+    buttonClass: '',
+    buttonLabel: null,
+  };
+}
 
 function render() {
   const needle = (q.value || '').trim().toLowerCase();
@@ -200,23 +235,49 @@ function render() {
     const card = document.createElement('button');
     card.className = 'card';
     const catLabel = categories.find((c) => c.slug === item.category)?.en || item.category || '';
+    const statusMeta = getStatusMeta(item);
     const inCart = cartIds.includes(item.id);
+    const buttonText = inCart ? '✓ In cart' : statusMeta.buttonLabel || 'Add to cart';
+    const buttonDisabled = !statusMeta.canSelect ? 'disabled' : '';
     card.innerHTML = `
-      <img src="${item.thumbUrl}" alt="${item.id}" loading="lazy">
+      <img class="thumb-img" src="${item.thumbUrl}" alt="${item.id}" loading="lazy">
       <div class="meta">
         <div class="card-meta-row">
           <span>ID: <span class="mono">${item.id}</span>${catLabel ? ` · ${catLabel}` : ''}</span>
-          <button type="button" class="card-cart-btn ${inCart ? 'in-cart' : ''}" data-id="${item.id}" aria-label="${inCart ? 'Remove from cart' : 'Add to cart'}">${inCart ? '✓ In cart' : 'Add to cart'}</button>
+          <span class="card-status ${statusMeta.badgeClass}">${statusMeta.badgeText}</span>
+          <button type="button" class="card-cart-btn ${inCart ? 'in-cart' : ''} ${statusMeta.buttonClass}" data-id="${item.id}" ${buttonDisabled} aria-label="${inCart ? 'Remove from cart' : 'Add to cart'}">${buttonText}</button>
         </div>
       </div>
     `;
     card.onclick = () => openModal(item);
+    const img = card.querySelector('.thumb-img');
+    if (img) {
+      img.onload = () => img.classList.add('loaded');
+    }
     const cartBtnEl = card.querySelector('.card-cart-btn');
-    if (cartBtnEl) cartBtnEl.onclick = (e) => toggleCart(item.id, e);
+    if (cartBtnEl && statusMeta.canSelect) cartBtnEl.onclick = (e) => toggleCart(item.id, e);
     grid.appendChild(card);
   }
 
   updateSelectionSummary(filtered.length);
+}
+
+function renderLoadError(statusOrMessage) {
+  const msg =
+    typeof statusOrMessage === 'number'
+      ? `Failed to load postcards (HTTP ${statusOrMessage}).`
+      : String(statusOrMessage || 'Failed to load postcards.');
+  grid.innerHTML = '';
+  const box = document.createElement('div');
+  box.className = 'empty-state error';
+  box.innerHTML = `<strong>${msg}</strong><span>Please check your connection and retry.</span>`;
+  const retry = document.createElement('button');
+  retry.type = 'button';
+  retry.className = 'btn';
+  retry.textContent = 'Retry';
+  retry.onclick = () => load();
+  box.appendChild(retry);
+  grid.appendChild(box);
 }
 
 function renderCategoryFilter() {
@@ -258,14 +319,15 @@ async function load() {
     const r = await fetch('/api/cards?' + params.toString(), { cache: 'no-store' });
     if (!r.ok) {
       console.error('Failed to load cards:', r.status, r.statusText);
+      renderLoadError(r.status);
       return;
     }
     const data = await r.json();
     items = data.items || [];
 
-    const availableIds = new Set(items.map((x) => x.id));
+    const selectableIds = new Set(items.filter((x) => x.status !== 'pending').map((x) => x.id));
     const prevCartSize = cartIds.length;
-    cartIds = cartIds.filter((id) => availableIds.has(id));
+    cartIds = cartIds.filter((id) => selectableIds.has(id));
     if (cartIds.length !== prevCartSize) updateCartUI();
 
     updateSelectionSummary(items.length);
@@ -277,12 +339,15 @@ async function load() {
       const modalClosed = modal.classList.contains('hidden');
       if (found && modalClosed && currentId !== hashId) {
         openModal(found);
+      } else if (found && currentId === hashId) {
+        currentCardStatus = found.status || 'available';
       } else if (!found && currentId === hashId) {
         closeModal();
       }
     }
   } catch (err) {
     console.error('Failed to load postcards:', err);
+    renderLoadError('Network error while loading postcards');
   } finally {
     isLoadingCards = false;
   }
@@ -340,6 +405,10 @@ form.addEventListener('submit', async (e) => {
   }
 
   const isCart = modalMode === 'cart' && cartIds.length > 0;
+  if (!isCart && currentCardStatus === 'pending') {
+    reqStatus.textContent = '❌ This postcard is currently pending another request.';
+    return;
+  }
   if (!isCart && !currentId) {
     reqStatus.textContent = '❌ Please select a postcard or add some to the cart first.';
     return;
@@ -365,7 +434,13 @@ form.addEventListener('submit', async (e) => {
     });
 
     if (r.ok) {
-      reqStatus.textContent = '✅ Request sent! We will review it and contact you.';
+      const payloadData = await r.json().catch(() => ({}));
+      if (payloadData?.deduped) {
+        reqStatus.textContent =
+          'ℹ️ Similar request was already sent recently. We will still review it.';
+      } else {
+        reqStatus.textContent = '✅ Request sent! We will review it and contact you.';
+      }
       if (isCart) {
         cartIds = [];
         updateCartUI();

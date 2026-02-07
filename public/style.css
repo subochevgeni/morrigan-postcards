@@ -218,6 +218,17 @@ main {
   color: #d7e5e2;
 }
 
+.empty-state.error {
+  border-style: solid;
+  border-color: rgba(255, 130, 130, 0.35);
+  background: rgba(120, 20, 20, 0.22);
+}
+
+.empty-state .btn {
+  justify-self: start;
+  margin-top: 6px;
+}
+
 .empty-state strong {
   font-size: 15px;
 }
@@ -257,6 +268,19 @@ main {
   background: #0f1922;
 }
 
+.card img.thumb-img {
+  filter: blur(8px) saturate(0.7);
+  transform: scale(1.02);
+  transition:
+    filter 0.32s ease,
+    transform 0.32s ease;
+}
+
+.card img.thumb-img.loaded {
+  filter: blur(0) saturate(1);
+  transform: scale(1);
+}
+
 .card .meta {
   flex-shrink: 0;
   padding: 9px 12px;
@@ -269,8 +293,31 @@ main {
 .card .meta .card-meta-row {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-start;
+  flex-wrap: wrap;
   gap: 8px;
+}
+
+.card-status {
+  padding: 3px 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.card-status.available {
+  color: #dfffee;
+  background: rgba(35, 161, 88, 0.25);
+  border-color: rgba(79, 220, 143, 0.5);
+}
+
+.card-status.pending {
+  color: #fff2de;
+  background: rgba(255, 155, 79, 0.22);
+  border-color: rgba(255, 181, 120, 0.5);
 }
 
 .card-cart-btn {
@@ -297,6 +344,14 @@ main {
 
 .card-cart-btn.in-cart:hover {
   background: #23a158;
+}
+
+.card-cart-btn.is-pending,
+.card-cart-btn.is-pending:hover {
+  background: rgba(255, 155, 79, 0.18);
+  border-color: rgba(255, 181, 120, 0.48);
+  color: #ffe8cf;
+  cursor: not-allowed;
 }
 
 .mono {
@@ -494,6 +549,33 @@ main {
   display: none;
 }
 
+.mobile-cta {
+  position: fixed;
+  z-index: 40;
+  left: 12px;
+  right: 12px;
+  bottom: 12px;
+  padding: 10px;
+  border-radius: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  background: rgba(10, 22, 29, 0.92);
+  backdrop-filter: blur(12px);
+  display: none;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  box-shadow: 0 16px 24px rgba(2, 8, 12, 0.42);
+}
+
+.mobile-cta.hidden {
+  display: none;
+}
+
+.mobile-cta-text {
+  font-size: 13px;
+  color: #d9ece5;
+}
+
 .sr-only {
   position: absolute;
   width: 1px;
@@ -544,5 +626,9 @@ main {
   .actions .btn {
     flex: 1;
     text-align: center;
+  }
+
+  .mobile-cta {
+    display: flex;
   }
 }

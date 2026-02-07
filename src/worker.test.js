@@ -372,6 +372,7 @@ describe('worker.fetch integration', () => {
           id: c.id,
           created_at: c.created_at ?? 0,
           status: c.status || 'available',
+          pending_until: c.pending_until ?? null,
           category: c.category || 'other',
           image_key: c.image_key || `cards/${c.id}/full.jpg`,
           thumb_key: c.thumb_key || `cards/${c.id}/thumb.jpg`,
@@ -384,6 +385,7 @@ describe('worker.fetch integration', () => {
           id,
           created_at: 0,
           status: 'available',
+          pending_until: null,
           category: 'other',
           image_key: `cards/${id}/full.jpg`,
           thumb_key: `cards/${id}/thumb.jpg`,
@@ -425,7 +427,37 @@ describe('worker.fetch integration', () => {
             if (sql.includes("SELECT id FROM cards WHERE id=?1 AND status='available'")) {
               const id = args[0];
               return {
-                first: async () => (available.has(id) ? { id } : null),
+                first: async () => {
+                  const row = cardStore.get(id);
+                  if (!row || row.status !== 'available') return null;
+                  return available.has(id) ? { id } : null;
+                },
+              };
+            }
+
+            if (
+              sql.includes('SELECT created_at, group_concat(postcard_id) AS ids_csv') &&
+              sql.includes('FROM requests')
+            ) {
+              const [name, cutoff] = args;
+              return {
+                all: async () => {
+                  const grouped = new Map();
+                  for (const r of insertedRequests) {
+                    if (r.name !== name) continue;
+                    if (Number(r.created_at) < Number(cutoff)) continue;
+                    if (!grouped.has(r.created_at)) grouped.set(r.created_at, []);
+                    grouped.get(r.created_at).push(r.postcard_id);
+                  }
+                  const results = Array.from(grouped.entries())
+                    .map(([createdAt, ids]) => ({
+                      created_at: Number(createdAt),
+                      ids_csv: ids.join(','),
+                    }))
+                    .sort((a, b) => b.created_at - a.created_at)
+                    .slice(0, 30);
+                  return { results };
+                },
               };
             }
 
@@ -449,7 +481,7 @@ describe('worker.fetch integration', () => {
 
             if (
               sql.includes(
-                "SELECT id, created_at, category FROM cards WHERE status='available' AND category=?1 ORDER BY created_at DESC LIMIT ?2"
+                "SELECT id, created_at, category, status, pending_until FROM cards WHERE status IN ('available','pending') AND category=?1 ORDER BY created_at DESC LIMIT ?2"
               )
             ) {
               const [category, limit] = args;
@@ -458,21 +490,76 @@ describe('worker.fetch integration', () => {
                   results: cards
                     .filter((x) => x.category === category)
                     .sort((a, b) => b.created_at - a.created_at)
-                    .slice(0, limit),
+                    .slice(0, limit)
+                    .map((x) => ({
+                      ...x,
+                      status: x.status || 'available',
+                      pending_until: x.pending_until || null,
+                    })),
                 }),
               };
             }
 
             if (
               sql.includes(
-                "SELECT id, created_at, category FROM cards WHERE status='available' ORDER BY created_at DESC LIMIT ?1"
+                "SELECT id, created_at, category, status, pending_until FROM cards WHERE status IN ('available','pending') ORDER BY created_at DESC LIMIT ?1"
               )
             ) {
               const [limit] = args;
               return {
                 all: async () => ({
-                  results: cards.sort((a, b) => b.created_at - a.created_at).slice(0, limit),
+                  results: cards
+                    .sort((a, b) => b.created_at - a.created_at)
+                    .slice(0, limit)
+                    .map((x) => ({
+                      ...x,
+                      status: x.status || 'available',
+                      pending_until: x.pending_until || null,
+                    })),
                 }),
+              };
+            }
+
+            if (
+              sql.includes(
+                "UPDATE cards SET status='available', pending_until=NULL WHERE status='pending' AND pending_until IS NOT NULL AND pending_until<=?1"
+              )
+            ) {
+              const [nowTs] = args;
+              return {
+                run: async () => {
+                  for (const row of cardStore.values()) {
+                    if (
+                      row.status === 'pending' &&
+                      row.pending_until != null &&
+                      Number(row.pending_until) <= Number(nowTs)
+                    ) {
+                      row.status = 'available';
+                      row.pending_until = null;
+                      available.add(row.id);
+                    }
+                  }
+                  return {};
+                },
+              };
+            }
+
+            if (
+              sql.includes(
+                "UPDATE cards SET status='pending', pending_until=?2 WHERE id=?1 AND status='available'"
+              )
+            ) {
+              const [id, until] = args;
+              return {
+                run: async () => {
+                  const row = cardStore.get(id);
+                  if (row && row.status === 'available') {
+                    row.status = 'pending';
+                    row.pending_until = Number(until);
+                    available.delete(id);
+                  }
+                  return {};
+                },
               };
             }
 
@@ -545,6 +632,35 @@ describe('worker.fetch integration', () => {
               };
             }
 
+            if (sql.includes('INSERT INTO admin_events')) {
+              return {
+                run: async () => ({}),
+              };
+            }
+
+            if (
+              sql.includes('INSERT INTO analytics_daily') &&
+              sql.includes('ON CONFLICT(event_date, event_name)')
+            ) {
+              return {
+                run: async () => ({}),
+              };
+            }
+
+            if (
+              sql.includes('SELECT action, ids_json, admin_chat_id, details_json, created_at FROM admin_events')
+            ) {
+              return {
+                all: async () => ({ results: [] }),
+              };
+            }
+
+            if (sql.includes('SELECT event_name, SUM(cnt) AS total') && sql.includes('FROM analytics_daily')) {
+              return {
+                all: async () => ({ results: [] }),
+              };
+            }
+
             throw new Error(`Unhandled SQL in test: ${sql}`);
           },
         };
@@ -606,9 +722,29 @@ describe('worker.fetch integration', () => {
     expect(data.items[0]).toMatchObject({
       id: 'nature1',
       category: 'nature',
+      status: 'available',
       thumbUrl: '/thumb/nature1.jpg',
       imageUrl: '/img/nature1.jpg',
     });
+  });
+
+  it('returns pending status in /api/cards payload', async () => {
+    const db = createDbMock({
+      cards: [
+        {
+          id: 'pend1',
+          created_at: 300,
+          category: 'nature',
+          status: 'pending',
+          pending_until: Date.now() + 10_000,
+        },
+      ],
+    });
+    const env = createEnv({ db });
+    const response = await worker.fetch(new Request('https://example.com/api/cards?limit=10'), env);
+    const data = await response.json();
+    expect(response.status).toBe(200);
+    expect(data.items[0]).toMatchObject({ id: 'pend1', status: 'pending' });
   });
 
   it('handles cart request with ids and inserts one request row per postcard', async () => {
@@ -708,6 +844,52 @@ describe('worker.fetch integration', () => {
 
       expect(response.status).toBe(400);
       expect(text).toBe('bad id');
+    } finally {
+      global.fetch = prevFetch;
+    }
+  });
+
+  it('returns deduped response for repeated request set in recent window', async () => {
+    const insertedRequests = [
+      {
+        postcard_id: 'abc123',
+        name: 'John Doe',
+        message: 'first',
+        created_at: Date.now() - 1_000,
+      },
+    ];
+    const db = createDbMock({
+      availableIds: ['abc123'],
+      insertedRequests,
+    });
+    const env = createEnv({ db });
+
+    const fetchMock = vi.fn(async (url) => {
+      if (url.includes('/turnstile/v0/siteverify')) {
+        return { json: async () => ({ success: true, hostname: 'example.com' }) };
+      }
+      throw new Error(`Unexpected fetch URL: ${url}`);
+    });
+    const prevFetch = global.fetch;
+    global.fetch = fetchMock;
+
+    try {
+      const response = await worker.fetch(
+        new Request('https://example.com/api/request', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            id: 'abc123',
+            name: 'John Doe',
+            message: 'retry',
+            turnstileToken: 'valid-token',
+          }),
+        }),
+        env
+      );
+      const data = await response.json();
+      expect(response.status).toBe(200);
+      expect(data).toMatchObject({ ok: true, deduped: true });
     } finally {
       global.fetch = prevFetch;
     }
