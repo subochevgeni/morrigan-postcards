@@ -52,7 +52,7 @@ let modalMode = 'single';
 let isLoadingCards = false;
 let autoRefreshTimer = null;
 
-const AUTO_REFRESH_MS = 15000;
+const AUTO_REFRESH_MS = 5000;
 
 function updateSelectionSummary(filteredCount = null) {
   if (!selectionSummaryEl) return;
@@ -255,7 +255,7 @@ async function load() {
   try {
     const params = new URLSearchParams({ limit: '200' });
     if (currentCategory) params.set('category', currentCategory);
-    const r = await fetch('/api/cards?' + params.toString());
+    const r = await fetch('/api/cards?' + params.toString(), { cache: 'no-store' });
     if (!r.ok) {
       console.error('Failed to load cards:', r.status, r.statusText);
       return;
@@ -297,6 +297,14 @@ function scheduleAutoRefresh() {
     scheduleAutoRefresh();
   }, AUTO_REFRESH_MS);
 }
+
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) load();
+});
+
+window.addEventListener('focus', () => {
+  load();
+});
 
 async function loadCategories() {
   try {

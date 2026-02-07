@@ -854,15 +854,23 @@ async function listCards(env, url) {
     : env.DB.prepare(sql).bind(limit);
   const { results } = await stmt.all();
 
-  return json({
-    items: (results || []).map((r) => ({
-      id: r.id,
-      createdAt: r.created_at,
-      category: r.category || 'other',
-      thumbUrl: `/thumb/${r.id}.jpg`,
-      imageUrl: `/img/${r.id}.jpg`,
-    })),
-  });
+  return new Response(
+    JSON.stringify({
+      items: (results || []).map((r) => ({
+        id: r.id,
+        createdAt: r.created_at,
+        category: r.category || 'other',
+        thumbUrl: `/thumb/${r.id}.jpg`,
+        imageUrl: `/img/${r.id}.jpg`,
+      })),
+    }),
+    {
+      headers: {
+        'content-type': 'application/json; charset=utf-8',
+        'cache-control': 'no-store, no-cache, must-revalidate',
+      },
+    }
+  );
 }
 
 function getCategories() {
