@@ -1,5 +1,3 @@
-const BOT_USERNAME = 'postcardsubot';
-
 let TURNSTILE_SITE_KEY = ''; // fetched from /api/config (public site key)
 let SITE_URL = 'https://subach.uk';
 
@@ -37,7 +35,6 @@ const modalCart = $('modalCart');
 const modalCartTitle = $('modalCartTitle');
 const modalCartList = $('modalCartList');
 const copyBtn = $('copy');
-const tgLink = $('tg');
 const cartBtn = $('cartBtn');
 const cartCountEl = $('cartCount');
 
@@ -88,7 +85,6 @@ function openModal(item) {
 
   modalImg.src = item.imageUrl;
   modalId.textContent = item.id;
-  tgLink.href = `https://t.me/${BOT_USERNAME}?start=pick_${item.id}`;
 
   copyBtn.onclick = async () => {
     await navigator.clipboard.writeText(item.id);
@@ -331,7 +327,7 @@ form.addEventListener('submit', async (e) => {
     });
 
     if (r.ok) {
-      reqStatus.textContent = '✅ Sent! The owners received your request in Telegram.';
+      reqStatus.textContent = '✅ Request sent! We will review it and contact you.';
       if (isCart) {
         cartIds = [];
         updateCartUI();

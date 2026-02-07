@@ -350,14 +350,35 @@ async function dbList(env, limit) {
   return (results || []).map((r) => r.id);
 }
 
-async function notifyAdmins(env, message) {
-  for (const adminId of getAdminList(env)) {
-    await tgSend(env, adminId, message);
-  }
-}
-
 function getSiteUrl(env) {
   return String(env.SITE_URL || 'https://subach.uk').replace(/\/$/, '');
+}
+
+const REQUEST_VISUAL_DIVIDER = '━━━━━━━━━━━━━━━━━━━━';
+
+function formatRequestTimestamp(ts) {
+  const d = new Date(Number(ts || Date.now()));
+  if (Number.isNaN(d.getTime())) return String(ts || '');
+  return d.toISOString().replace('T', ' ').replace('.000Z', ' UTC');
+}
+
+function buildAdminRequestText({ postcardIds, name, message, siteUrl, createdAt }) {
+  const ids = cleanPostcardIds(Array.isArray(postcardIds) ? postcardIds : [postcardIds], 20);
+  const isMulti = ids.length > 1;
+  const idsBlock = isMulti
+    ? `📮 IDs (${ids.length}):\n${ids.map((id) => `• ${id}`).join('\n')}`
+    : `📮 ID: ${ids[0] || '—'}`;
+  const siteLink = isMulti ? siteUrl : `${siteUrl}/#${ids[0] || ''}`;
+
+  return (
+    `🆕 WEBSITE REQUEST${isMulti ? ' · MULTI' : ''}\n` +
+    `${REQUEST_VISUAL_DIVIDER}\n` +
+    `${idsBlock}\n` +
+    `👤 Name: ${name}\n` +
+    `💬 Message: ${message || '—'}\n` +
+    `🕒 ${formatRequestTimestamp(createdAt)}\n` +
+    `🌐 ${siteLink}`
+  );
 }
 
 async function notifyAdminsWithRequestCard(env, postcardId, requestText, imageUrl) {
@@ -365,7 +386,9 @@ async function notifyAdminsWithRequestCard(env, postcardId, requestText, imageUr
   const deleteKeyboard = buildDeleteInlineKeyboard([postcardId]);
   for (const adminId of getAdminList(env)) {
     const textWithActions = deleteKeyboard
-      ? requestText + '\n\n🛠 Quick action: tap button below to remove this card from gallery.'
+      ? requestText +
+        `\n${REQUEST_VISUAL_DIVIDER}\n` +
+        '🛠 Quick actions: tap button below to remove this card from gallery.'
       : requestText;
     await tgSend(env, adminId, textWithActions, deleteKeyboard);
     await tgSendPhoto(env, adminId, url, `ID: ${postcardId}`);
@@ -388,7 +411,8 @@ async function notifyAdminsWithRequestCards(env, postcardIds, requestText) {
   for (const adminId of getAdminList(env)) {
     const textWithActions = deleteKeyboard
       ? requestText +
-        '\n\n🛠 Quick action: tap ID to remove one card, or Delete all to remove the whole set.'
+        `\n${REQUEST_VISUAL_DIVIDER}\n` +
+        '🛠 Quick actions: tap ID to remove one card, or Delete all to remove the whole set.'
       : requestText;
     await tgSend(env, adminId, textWithActions, deleteKeyboard);
     if (media.length > 0) {
@@ -506,12 +530,13 @@ async function handleWebRequest(request, env) {
         .run();
     }
 
-    const requestText =
-      '🌍 Запрос с сайта (несколько открыток)\n\n' +
-      `📌 Открытки: ${postcardIds.join(', ')}\n` +
-      `👤 Имя: ${name}\n` +
-      `💬 Сообщение: ${message || '—'}\n\n` +
-      `🔗 ${siteUrl}`;
+    const requestText = buildAdminRequestText({
+      postcardIds,
+      name,
+      message,
+      siteUrl,
+      createdAt: now,
+    });
 
     await notifyAdminsWithRequestCards(env, postcardIds, requestText);
     return json({ ok: true });
@@ -526,18 +551,20 @@ async function handleWebRequest(request, env) {
 
   if (!card) return text('not found', 404);
 
+  const now = Date.now();
   await env.DB.prepare(
     'INSERT INTO requests (postcard_id, name, message, created_at) VALUES (?1, ?2, ?3, ?4)'
   )
-    .bind(postcardId, name, message || null, Date.now())
+    .bind(postcardId, name, message || null, now)
     .run();
 
-  const requestText =
-    '🌍 Запрос с сайта (без Telegram)\n\n' +
-    `📌 Открытка: ${postcardId}\n` +
-    `👤 Имя: ${name}\n` +
-    `💬 Сообщение: ${message || '—'}\n\n` +
-    `🔗 ${siteUrl}/#${postcardId}`;
+  const requestText = buildAdminRequestText({
+    postcardIds: [postcardId],
+    name,
+    message,
+    siteUrl,
+    createdAt: now,
+  });
 
   await notifyAdminsWithRequestCard(env, postcardId, requestText);
 
@@ -675,18 +702,15 @@ async function handleTelegram(request, env) {
 
   // User clicked from website: /start pick_<id>
   if (msgText.startsWith('/start')) {
-    const m = msgText.match(/pick_([0-9a-z]+)/i);
-    if (m && !isAdmin) {
-      const pickedId = m[1];
-      await notifyAdmins(
+    if (isAdmin) {
+      await tgSend(env, chatId, adminHelpText(), adminKeyboard());
+    } else {
+      await tgSend(
         env,
-        `📩 Telegram request\nID: ${pickedId}\nFrom: ${username}\nChat: ${chatId}\nLink: https://subach.uk/#${pickedId}`
+        chatId,
+        '👋 Welcome! Please use the website to browse postcards and send exchange requests.'
       );
-      await tgSend(env, chatId, `✅ Got it! I forwarded your request.\nID: ${pickedId}`);
-      return json({ ok: true });
     }
-
-    if (isAdmin) await tgSend(env, chatId, adminHelpText(), adminKeyboard());
     return json({ ok: true });
   }
 
@@ -762,7 +786,7 @@ async function handleTelegram(request, env) {
     return json({ ok: true });
   }
 
-  // Non-admin: ignore (except /myid and /start pick_)
+  // Non-admin: ignore (except /myid and /start)
   if (!isAdmin) return json({ ok: true });
 
   // Admin sent document instead of photo

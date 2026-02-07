@@ -80,7 +80,7 @@ describe('Request form submission', () => {
     });
 
     if (r.ok) {
-      reqStatus.textContent = '✅ Sent! The owners received your request in Telegram.';
+      reqStatus.textContent = '✅ Request sent! We will review it and contact you.';
       form.classList.add('hidden');
       window.turnstile.reset();
     }
@@ -101,7 +101,7 @@ describe('Request form submission', () => {
     });
 
     // Verify UI updates
-    expect(reqStatus.textContent).toBe('✅ Sent! The owners received your request in Telegram.');
+    expect(reqStatus.textContent).toBe('✅ Request sent! We will review it and contact you.');
     expect(form.classList.contains('hidden')).toBe(true);
     expect(window.turnstile.reset).toHaveBeenCalled();
   });
@@ -321,7 +321,7 @@ describe('Request form submission', () => {
     });
 
     if (r.ok) {
-      reqStatus.textContent = '✅ Sent! The owners received your request in Telegram.';
+      reqStatus.textContent = '✅ Request sent! We will review it and contact you.';
       form.classList.add('hidden');
       // Simulate setTimeout resetTurnstile call
       await new Promise((resolve) =>
@@ -336,7 +336,7 @@ describe('Request form submission', () => {
 
     // Verify Turnstile was reset after successful submission
     expect(window.turnstile.reset).toHaveBeenCalled();
-    expect(reqStatus.textContent).toContain('✅ Sent!');
+    expect(reqStatus.textContent).toContain('✅ Request sent!');
   });
 
   it('resets Turnstile widget after failed form submission', async () => {
@@ -441,7 +441,6 @@ function setupCartDOM() {
         <img id="modalImg" src="" alt="" />
         <span id="modalId"></span>
         <button id="copy">Copy ID</button>
-        <a id="tg" href="#">Telegram</a>
       </div>
       <div id="modalCart" class="hidden">
         <h2 id="modalCartTitle"></h2>
