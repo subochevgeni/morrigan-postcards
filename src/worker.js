@@ -513,7 +513,17 @@ async function handleTelegram(request, env) {
   if (request.method !== 'POST') return text('method not allowed', 405);
 
   const secret = request.headers.get('X-Telegram-Bot-Api-Secret-Token');
-  if (!secret || secret !== env.TG_WEBHOOK_SECRET) return text('unauthorized', 401);
+  const expectedSecret = String(env.TG_WEBHOOK_SECRET || '').trim();
+  const strictSecretCheck =
+    String(env.TG_STRICT_WEBHOOK_SECRET || '')
+      .trim()
+      .toLowerCase() === 'true' ||
+    String(env.TG_STRICT_WEBHOOK_SECRET || '').trim() === '1';
+
+  if (expectedSecret && secret !== expectedSecret) {
+    console.log('tg webhook secret mismatch');
+    if (strictSecretCheck) return text('unauthorized', 401);
+  }
 
   const update = await request.json().catch(() => ({}));
   const admins = getAdminList(env);

@@ -336,6 +336,8 @@ form.addEventListener('submit', async (e) => {
         cartIds = [];
         updateCartUI();
         setTimeout(closeModal, 1200);
+      } else {
+        setTimeout(closeModal, 1200);
       }
       setTimeout(() => {
         resetTurnstile();

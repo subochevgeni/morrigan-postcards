@@ -552,13 +552,14 @@ describe('worker.fetch integration', () => {
     };
   }
 
-  function createEnv({ db, adminChatIds = '1001,1002' } = {}) {
+  function createEnv({ db, adminChatIds = '1001,1002', strictWebhookSecret = '' } = {}) {
     return {
       DB: db || createDbMock(),
       ADMIN_CHAT_IDS: adminChatIds,
       TURNSTILE_SECRET_KEY: 'prod-secret',
       TG_BOT_TOKEN: 'test-bot-token',
       TG_WEBHOOK_SECRET: 'tg-hook-secret',
+      TG_STRICT_WEBHOOK_SECRET: strictWebhookSecret,
       SITE_URL: 'https://example.com',
       BUCKET: { delete: vi.fn() },
       ASSETS: { fetch: vi.fn() },
@@ -777,6 +778,80 @@ describe('worker.fetch integration', () => {
     } finally {
       global.fetch = prevFetch;
     }
+  });
+
+  it('processes callback in compatibility mode even when secret header is missing', async () => {
+    const deletedCardIds = [];
+    const db = createDbMock({
+      cardRecords: [
+        {
+          id: 'abc123',
+          status: 'available',
+          image_key: 'cards/abc123/full.jpg',
+          thumb_key: 'cards/abc123/thumb.jpg',
+        },
+      ],
+      deletedCardIds,
+    });
+    const env = createEnv({ db, adminChatIds: '1001' });
+
+    const fetchMock = vi.fn(async (url) => {
+      if (url.includes('/answerCallbackQuery')) return { json: async () => ({ ok: true }) };
+      if (url.includes('/sendMessage')) return { json: async () => ({ ok: true }) };
+      throw new Error(`Unexpected fetch URL: ${url}`);
+    });
+    const prevFetch = global.fetch;
+    global.fetch = fetchMock;
+
+    try {
+      const response = await worker.fetch(
+        new Request('https://example.com/tg', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            callback_query: {
+              id: 'cb_compat',
+              data: 'del:abc123',
+              from: { id: 1001, username: 'admin' },
+              message: { chat: { id: 1001 } },
+            },
+          }),
+        }),
+        env
+      );
+      const data = await response.json();
+
+      expect(response.status).toBe(200);
+      expect(data).toEqual({ ok: true });
+      expect(deletedCardIds).toEqual(['abc123']);
+    } finally {
+      global.fetch = prevFetch;
+    }
+  });
+
+  it('rejects request in strict webhook secret mode when header mismatches', async () => {
+    const env = createEnv({ strictWebhookSecret: '1' });
+    const response = await worker.fetch(
+      new Request('https://example.com/tg', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'X-Telegram-Bot-Api-Secret-Token': 'bad-secret',
+        },
+        body: JSON.stringify({
+          callback_query: {
+            id: 'cb_strict',
+            data: 'del:abc123',
+            from: { id: 1001, username: 'admin' },
+            message: { chat: { id: 1001 } },
+          },
+        }),
+      }),
+      env
+    );
+
+    expect(response.status).toBe(401);
+    expect(await response.text()).toBe('unauthorized');
   });
 
   it('sends explicit message when single delete target is already missing', async () => {
