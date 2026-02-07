@@ -55,8 +55,20 @@ let cartIds = [];
 let modalMode = 'single';
 let isLoadingCards = false;
 let autoRefreshTimer = null;
+let itemsFingerprint = '';
+let hasRenderedGrid = false;
+let gridHasLoadError = false;
 
 const AUTO_REFRESH_MS = 5000;
+
+function makeItemsFingerprint(list) {
+  return list
+    .map(
+      (item) =>
+        `${item.id}|${item.status || 'available'}|${item.pendingUntil || ''}|${item.thumbUrl || ''}|${item.imageUrl || ''}`
+    )
+    .join(';');
+}
 
 function updateSelectionSummary(filteredCount = null) {
   if (!selectionSummaryEl) return;
@@ -252,7 +264,8 @@ function render() {
     card.onclick = () => openModal(item);
     const img = card.querySelector('.thumb-img');
     if (img) {
-      img.onload = () => img.classList.add('loaded');
+      if (img.complete) img.classList.add('loaded');
+      else img.onload = () => img.classList.add('loaded');
     }
     const cartBtnEl = card.querySelector('.card-cart-btn');
     if (cartBtnEl && statusMeta.canSelect) cartBtnEl.onclick = (e) => toggleCart(item.id, e);
@@ -260,6 +273,8 @@ function render() {
   }
 
   updateSelectionSummary(filtered.length);
+  hasRenderedGrid = true;
+  gridHasLoadError = false;
 }
 
 function renderLoadError(statusOrMessage) {
@@ -278,6 +293,7 @@ function renderLoadError(statusOrMessage) {
   retry.onclick = () => load();
   box.appendChild(retry);
   grid.appendChild(box);
+  gridHasLoadError = true;
 }
 
 function renderCategoryFilter() {
@@ -323,15 +339,21 @@ async function load() {
       return;
     }
     const data = await r.json();
-    items = data.items || [];
+    const nextItems = data.items || [];
+    const nextFingerprint = makeItemsFingerprint(nextItems);
+    const shouldRenderGrid =
+      !hasRenderedGrid || gridHasLoadError || nextFingerprint !== itemsFingerprint;
+    items = nextItems;
 
     const selectableIds = new Set(items.filter((x) => x.status !== 'pending').map((x) => x.id));
     const prevCartSize = cartIds.length;
     cartIds = cartIds.filter((id) => selectableIds.has(id));
     if (cartIds.length !== prevCartSize) updateCartUI();
 
-    updateSelectionSummary(items.length);
-    render();
+    if (shouldRenderGrid) {
+      render();
+      itemsFingerprint = nextFingerprint;
+    }
 
     const hashId = (location.hash || '').replace('#', '').trim();
     if (hashId) {
