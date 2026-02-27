@@ -23,6 +23,10 @@ const CATEGORIES = {
 const CATEGORY_SLUGS = Object.keys(CATEGORIES);
 const ACCESS_COOKIE_NAME = 'mpe_access';
 const ACCESS_DEFAULT_TTL_DAYS = 14;
+const ACCESS_STATE_PRIMARY_KEY = 'primary';
+const ACCESS_PHRASE_MIN_LEN = 6;
+const ACCESS_PHRASE_MAX_LEN = 80;
+const ACCESS_PHRASE_RE = /^[a-z0-9][a-z0-9._:-]*$/i;
 
 function base64UrlFromArrayBuffer(buf) {
   const bytes = new Uint8Array(buf);
@@ -70,11 +74,11 @@ function parseCookies(request) {
   return out;
 }
 
-function getAccessPhrase(env) {
+function getEnvAccessPhrase(env) {
   return String(env.SITE_ACCESS_PHRASE || '').trim();
 }
 
-function getAccessPhrases(env) {
+function getEnvAccessPhrases(env) {
   const csv = String(env.SITE_ACCESS_PHRASES || '').trim();
   if (csv) {
     return Array.from(
@@ -89,13 +93,109 @@ function getAccessPhrases(env) {
 
   return Array.from(
     new Set(
-      [getAccessPhrase(env), String(env.SITE_ACCESS_PHRASE_PREVIOUS || '').trim()].filter(Boolean)
+      [getEnvAccessPhrase(env), String(env.SITE_ACCESS_PHRASE_PREVIOUS || '').trim()].filter(
+        Boolean
+      )
     )
   );
 }
 
-function isAccessGateEnabled(env) {
-  return getAccessPhrases(env).length > 0;
+function isMissingTableError(err, tableName) {
+  const msg = String(err?.message || '').toLowerCase();
+  return msg.includes('no such table') && msg.includes(String(tableName || '').toLowerCase());
+}
+
+function normalizeAccessPhraseInput(raw) {
+  const phrase = String(raw || '').trim();
+  if (!phrase) return { ok: false, error: 'Secret phrase is required.' };
+  if (phrase.length < ACCESS_PHRASE_MIN_LEN || phrase.length > ACCESS_PHRASE_MAX_LEN) {
+    return {
+      ok: false,
+      error: `Secret phrase length must be ${ACCESS_PHRASE_MIN_LEN}..${ACCESS_PHRASE_MAX_LEN} characters.`,
+    };
+  }
+  if (!ACCESS_PHRASE_RE.test(phrase)) {
+    return {
+      ok: false,
+      error:
+        'Secret phrase can contain only latin letters, numbers, dot, underscore, colon, and dash.',
+    };
+  }
+  return { ok: true, value: phrase };
+}
+
+async function dbGetSiteAccessState(env) {
+  try {
+    const row = await env.DB.prepare(
+      'SELECT current_phrase, previous_phrase, updated_at, updated_by_chat_id FROM site_access_state WHERE key=?1'
+    )
+      .bind(ACCESS_STATE_PRIMARY_KEY)
+      .first();
+    return row || null;
+  } catch (e) {
+    if (isMissingTableError(e, 'site_access_state')) return null;
+    throw e;
+  }
+}
+
+async function dbUpsertSiteAccessState(
+  env,
+  { currentPhrase, previousPhrase = null, updatedAt, updatedByChatId = null }
+) {
+  try {
+    await env.DB.prepare(
+      `INSERT INTO site_access_state (key, current_phrase, previous_phrase, updated_at, updated_by_chat_id)
+       VALUES (?1, ?2, ?3, ?4, ?5)
+       ON CONFLICT(key) DO UPDATE SET
+         current_phrase=excluded.current_phrase,
+         previous_phrase=excluded.previous_phrase,
+         updated_at=excluded.updated_at,
+         updated_by_chat_id=excluded.updated_by_chat_id`
+    )
+      .bind(ACCESS_STATE_PRIMARY_KEY, currentPhrase, previousPhrase, updatedAt, updatedByChatId)
+      .run();
+    return { ok: true };
+  } catch (e) {
+    if (isMissingTableError(e, 'site_access_state')) return { ok: false, missingTable: true };
+    throw e;
+  }
+}
+
+function buildAccessStateFromEnv(env) {
+  const phrases = getEnvAccessPhrases(env);
+  return {
+    source: 'env',
+    phrases,
+    currentPhrase: phrases[0] || '',
+    previousPhrase: phrases[1] || '',
+    updatedAt: null,
+    updatedByChatId: null,
+  };
+}
+
+function buildAccessStateFromDbRow(row) {
+  const currentPhrase = String(row?.current_phrase || '').trim();
+  const previousPhrase = String(row?.previous_phrase || '').trim();
+  const phrases = Array.from(new Set([currentPhrase, previousPhrase].filter(Boolean)));
+  if (!phrases.length) return null;
+  return {
+    source: 'db',
+    phrases,
+    currentPhrase,
+    previousPhrase,
+    updatedAt: Number(row?.updated_at || 0) || null,
+    updatedByChatId: String(row?.updated_by_chat_id || '').trim() || null,
+  };
+}
+
+async function getEffectiveAccessState(env) {
+  const fromDb = buildAccessStateFromDbRow(await dbGetSiteAccessState(env));
+  if (fromDb) return fromDb;
+  return buildAccessStateFromEnv(env);
+}
+
+async function isAccessGateEnabled(env) {
+  return (await getEffectiveAccessState(env)).phrases.length > 0;
 }
 
 function getAccessTtlDays(env) {
@@ -104,11 +204,11 @@ function getAccessTtlDays(env) {
   return Math.min(Math.max(Math.floor(raw), 1), 90);
 }
 
-function getAccessSigningKey(env) {
-  return String(env.SITE_ACCESS_SIGNING_KEY || getAccessPhrase(env));
+function getAccessSigningKey(env, fallbackPhrase = '') {
+  return String(env.SITE_ACCESS_SIGNING_KEY || fallbackPhrase).trim();
 }
 
-function getAccessSigningKeys(env) {
+function getAccessSigningKeys(env, accessPhrases = []) {
   const csv = String(env.SITE_ACCESS_SIGNING_KEYS || '').trim();
   if (csv) {
     return Array.from(
@@ -125,30 +225,33 @@ function getAccessSigningKeys(env) {
     new Set(
       [
         String(env.SITE_ACCESS_SIGNING_KEY || '').trim(),
-        ...getAccessPhrases(env),
-        getAccessSigningKey(env),
+        ...accessPhrases,
+        getAccessSigningKey(env, accessPhrases[0] || ''),
       ].filter(Boolean)
     )
   );
 }
 
-async function createAccessToken(env) {
+async function createAccessToken(env, accessPhrases = []) {
   const ttlDays = getAccessTtlDays(env);
   const expiresAt = Date.now() + ttlDays * 24 * 60 * 60 * 1000;
   const payload = `mpe-access:${expiresAt}`;
-  const signingKeys = getAccessSigningKeys(env);
+  const signingKeys = getAccessSigningKeys(env, accessPhrases);
   const primaryKey = signingKeys[0];
+  if (!primaryKey) throw new Error('missing access signing key');
   const sig = await hmacSignBase64Url(primaryKey, payload);
   return `${expiresAt}.${sig}`;
 }
 
-async function verifyAccessToken(env, token) {
+async function verifyAccessToken(env, token, accessPhrases = []) {
   const [expiresRaw, sig] = String(token || '').split('.');
   const expiresAt = Number(expiresRaw || 0);
   if (!Number.isFinite(expiresAt) || expiresAt <= Date.now()) return false;
   if (!sig) return false;
   const payload = `mpe-access:${expiresAt}`;
-  for (const key of getAccessSigningKeys(env)) {
+  const signingKeys = getAccessSigningKeys(env, accessPhrases);
+  if (!signingKeys.length) return false;
+  for (const key of signingKeys) {
     const expected = await hmacSignBase64Url(key, payload);
     if (expected === sig) return true;
   }
@@ -165,11 +268,12 @@ function buildAccessCookieExpired() {
 }
 
 async function isAccessAuthorized(request, env) {
-  if (!isAccessGateEnabled(env)) return true;
+  const accessState = await getEffectiveAccessState(env);
+  if (!accessState.phrases.length) return true;
   const cookies = parseCookies(request);
   const token = cookies[ACCESS_COOKIE_NAME];
   if (!token) return false;
-  return verifyAccessToken(env, token);
+  return verifyAccessToken(env, token, accessState.phrases);
 }
 
 function buildAccessGatePage(ttlDays = ACCESS_DEFAULT_TTL_DAYS) {
@@ -290,12 +394,12 @@ function buildLockedApiResponse() {
   return json({ ok: false, error: 'locked' }, 401);
 }
 
-function buildSecretPhraseCandidates(env) {
-  return getAccessPhrases(env);
+async function buildSecretPhraseCandidates(env) {
+  return (await getEffectiveAccessState(env)).phrases;
 }
 
 async function handleSiteUnlock(request, env) {
-  if (!isAccessGateEnabled(env)) return text('not found', 404);
+  if (!(await isAccessGateEnabled(env))) return text('not found', 404);
   if (request.method !== 'POST') return text('method not allowed', 405);
 
   let body = {};
@@ -308,7 +412,7 @@ async function handleSiteUnlock(request, env) {
   const supplied = String(body?.secretWord || body?.secret || '').trim();
   if (!supplied) return text('secret required', 400);
 
-  const candidates = buildSecretPhraseCandidates(env);
+  const candidates = await buildSecretPhraseCandidates(env);
   let ok = false;
   for (const phrase of candidates) {
     if (await securePhraseMatch(phrase, supplied)) {
@@ -318,7 +422,13 @@ async function handleSiteUnlock(request, env) {
   }
   if (!ok) return text('forbidden', 401);
 
-  const token = await createAccessToken(env);
+  let token;
+  try {
+    token = await createAccessToken(env, candidates);
+  } catch (e) {
+    console.log('access token create failed', e);
+    return text('access not configured', 500);
+  }
   return new Response(JSON.stringify({ ok: true }), {
     status: 200,
     headers: {
@@ -330,7 +440,7 @@ async function handleSiteUnlock(request, env) {
 }
 
 async function handleSiteLogout(request, env) {
-  if (!isAccessGateEnabled(env)) return text('not found', 404);
+  if (!(await isAccessGateEnabled(env))) return text('not found', 404);
   if (request.method !== 'POST') return text('method not allowed', 405);
   return new Response(JSON.stringify({ ok: true }), {
     status: 200,
@@ -437,13 +547,35 @@ function formatWebhookInfo(info) {
   return lines.join('\n');
 }
 
+function generateAccessPhrase() {
+  return `morrigan-${makeId(12)}`;
+}
+
+function formatAccessStateInfo(state, ttlDays) {
+  const lines = [
+    '🔐 Access phrase',
+    `Status: ${state.phrases.length ? 'enabled' : 'disabled'}`,
+    `Source: ${state.source === 'db' ? 'D1 runtime state' : 'env vars'}`,
+    `Current: ${state.currentPhrase || '(not set)'}`,
+    `Previous: ${state.previousPhrase || '(none)'}`,
+    `TTL days: ${ttlDays}`,
+  ];
+  if (state.source === 'db' && state.updatedAt) {
+    lines.push(`Updated: ${new Date(state.updatedAt).toISOString()}`);
+  }
+  if (state.source === 'db' && state.updatedByChatId) {
+    lines.push(`Updated by chat_id: ${state.updatedByChatId}`);
+  }
+  return lines.join('\n');
+}
+
 function adminKeyboard() {
   return {
     keyboard: [
       [{ text: '📊 Stats' }, { text: '🆕 Last' }],
       [{ text: '🗂️ List 20' }, { text: '🕘 Recent' }],
       [{ text: '📈 Analytics' }, { text: '🆔 My ID' }],
-      [{ text: '🔌 Webhook' }],
+      [{ text: '🔌 Webhook' }, { text: '🔐 Access Word' }],
       [{ text: '🗑 Delete by ID' }, { text: '❓ Help' }],
     ],
     resize_keyboard: true,
@@ -465,6 +597,8 @@ function adminHelpText() {
     '/list [n] — last n IDs (1..200)\n' +
     '/recent [n] — recent admin events\n' +
     '/analytics [days] — aggregated counters\n' +
+    '/accessword — show current/previous secret phrase\n' +
+    '/rotateaccess [new_phrase] — rotate phrase (auto-generate if omitted)\n' +
     '/webhookinfo — Telegram webhook diagnostics\n' +
     '/setwebhook — reset webhook with callback_query support\n' +
     '/delete <id> — delete postcard'
@@ -480,6 +614,7 @@ function normalizeAdminText(text) {
   if (t === '📈 Analytics') return '/analytics 7';
   if (t === '🆔 My ID') return '/myid';
   if (t === '🔌 Webhook') return '/webhookinfo';
+  if (t === '🔐 Access Word') return '/accessword';
   if (t === '🗑 Delete by ID') return '/delete';
   if (t === '❓ Help') return '/help';
   return t;
@@ -1280,6 +1415,72 @@ async function handleTelegram(request, env) {
       return json({ ok: true });
     }
 
+    if (cmd === '/accessword') {
+      const state = await getEffectiveAccessState(env);
+      await tgSend(env, chatId, formatAccessStateInfo(state, getAccessTtlDays(env)), adminKeyboard());
+      return json({ ok: true });
+    }
+
+    if (cmd === '/rotateaccess') {
+      const candidateRaw = parts.slice(1).join(' ').trim();
+      let nextPhrase = candidateRaw;
+      let autoGenerated = false;
+      if (!nextPhrase) {
+        nextPhrase = generateAccessPhrase();
+        autoGenerated = true;
+      }
+
+      const parsedPhrase = normalizeAccessPhraseInput(nextPhrase);
+      if (!parsedPhrase.ok) {
+        await tgSend(env, chatId, `Usage: /rotateaccess [new_phrase]\n${parsedPhrase.error}`);
+        return json({ ok: true });
+      }
+      nextPhrase = parsedPhrase.value;
+
+      const currentState = await getEffectiveAccessState(env);
+      const previousPhrase = currentState.currentPhrase || null;
+      if (previousPhrase && previousPhrase === nextPhrase) {
+        await tgSend(env, chatId, 'This phrase is already active.');
+        return json({ ok: true });
+      }
+
+      const saveResult = await dbUpsertSiteAccessState(env, {
+        currentPhrase: nextPhrase,
+        previousPhrase,
+        updatedAt: Date.now(),
+        updatedByChatId: chatId,
+      });
+      if (!saveResult.ok && saveResult.missingTable) {
+        await tgSend(
+          env,
+          chatId,
+          'Rotation storage is not initialized. Apply D1 migration 0004_site_access_state.sql and retry.'
+        );
+        return json({ ok: true });
+      }
+
+      await addAdminEvent(env, {
+        action: 'rotate_access_phrase',
+        ids: [],
+        adminChatId: chatId,
+        details: {
+          source_before: currentState.source,
+          auto_generated: autoGenerated,
+          previous_was_set: Boolean(previousPhrase),
+        },
+      });
+      await trackAnalytics(env, 'access_rotated');
+
+      const updatedState = await getEffectiveAccessState(env);
+      await tgSend(
+        env,
+        chatId,
+        `✅ Access phrase rotated (${autoGenerated ? 'auto-generated' : 'custom'}).\n\n${formatAccessStateInfo(updatedState, getAccessTtlDays(env))}`,
+        adminKeyboard()
+      );
+      return json({ ok: true });
+    }
+
     if (cmd === '/webhookinfo') {
       const info = await tgGetWebhookInfo(env);
       await tgSend(env, chatId, formatWebhookInfo(info), adminKeyboard());
@@ -1467,7 +1668,7 @@ export default {
       return json({
         turnstileSiteKey: String(env.TURNSTILE_SITE_KEY || ''),
         siteUrl: String(env.SITE_URL || 'https://subach.uk'),
-        accessGateEnabled: isAccessGateEnabled(env),
+        accessGateEnabled: await isAccessGateEnabled(env),
       });
     }
 

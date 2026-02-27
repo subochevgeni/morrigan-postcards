@@ -65,3 +65,12 @@ CREATE TABLE IF NOT EXISTS analytics_daily (
   cnt INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (event_date, event_name)
 );
+
+-- Runtime-managed access phrase state (used by Telegram admin rotation commands)
+CREATE TABLE IF NOT EXISTS site_access_state (
+  key TEXT PRIMARY KEY,
+  current_phrase TEXT NOT NULL,
+  previous_phrase TEXT,
+  updated_at INTEGER NOT NULL,
+  updated_by_chat_id TEXT
+);

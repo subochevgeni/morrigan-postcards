@@ -363,6 +363,7 @@ describe('worker.fetch integration', () => {
     adminActionRecords = [],
     createdAdminActions = [],
     deletedAdminActionTokens = [],
+    siteAccessState = null,
   } = {}) {
     const available = new Set(availableIds);
     const cardStore = new Map(
@@ -408,6 +409,14 @@ describe('worker.fetch integration', () => {
         },
       ])
     );
+    let accessState = siteAccessState
+      ? {
+          current_phrase: String(siteAccessState.current_phrase || '').trim(),
+          previous_phrase: String(siteAccessState.previous_phrase || '').trim() || null,
+          updated_at: Number(siteAccessState.updated_at || Date.now()) || Date.now(),
+          updated_by_chat_id: String(siteAccessState.updated_by_chat_id || '').trim() || null,
+        }
+      : null;
 
     return {
       prepare(sql) {
@@ -635,6 +644,31 @@ describe('worker.fetch integration', () => {
             if (sql.includes('INSERT INTO admin_events')) {
               return {
                 run: async () => ({}),
+              };
+            }
+
+            if (
+              sql.includes(
+                'SELECT current_phrase, previous_phrase, updated_at, updated_by_chat_id FROM site_access_state WHERE key=?1'
+              )
+            ) {
+              const [key] = args;
+              return {
+                first: async () => (key === 'primary' && accessState ? { ...accessState } : null),
+              };
+            }
+
+            if (sql.includes('INSERT INTO site_access_state')) {
+              return {
+                run: async () => {
+                  accessState = {
+                    current_phrase: String(args[1] || '').trim(),
+                    previous_phrase: String(args[2] || '').trim() || null,
+                    updated_at: Number(args[3] || Date.now()) || Date.now(),
+                    updated_by_chat_id: String(args[4] || '').trim() || null,
+                  };
+                  return {};
+                },
               };
             }
 
@@ -1268,6 +1302,122 @@ describe('worker.fetch integration', () => {
       expect(sendMessageCalls).toHaveLength(1);
       const sendPayload = JSON.parse(sendMessageCalls[0][1].body);
       expect(sendPayload.text).toContain('Bulk delete done: removed 2/3');
+    } finally {
+      global.fetch = prevFetch;
+    }
+  });
+
+  it('shows active access phrases for admin via /accessword', async () => {
+    const db = createDbMock({
+      siteAccessState: {
+        current_phrase: 'db-current-secret',
+        previous_phrase: 'db-previous-secret',
+        updated_at: 1_700_000_000_000,
+        updated_by_chat_id: '1001',
+      },
+    });
+    const env = createEnv({ db, adminChatIds: '1001' });
+
+    const fetchMock = vi.fn(async (url) => {
+      if (url.includes('/sendMessage')) return { json: async () => ({ ok: true }) };
+      throw new Error(`Unexpected fetch URL: ${url}`);
+    });
+    const prevFetch = global.fetch;
+    global.fetch = fetchMock;
+
+    try {
+      const response = await worker.fetch(
+        new Request('https://example.com/tg', {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            'X-Telegram-Bot-Api-Secret-Token': env.TG_WEBHOOK_SECRET,
+          },
+          body: JSON.stringify({
+            message: {
+              text: '/accessword',
+              chat: { id: 1001 },
+              from: { username: 'admin' },
+            },
+          }),
+        }),
+        env
+      );
+      expect(response.status).toBe(200);
+
+      const sendMessageCalls = fetchMock.mock.calls.filter(([url]) =>
+        String(url).includes('/sendMessage')
+      );
+      expect(sendMessageCalls).toHaveLength(1);
+      const sendPayload = JSON.parse(sendMessageCalls[0][1].body);
+      expect(sendPayload.text).toContain('Current: db-current-secret');
+      expect(sendPayload.text).toContain('Previous: db-previous-secret');
+      expect(sendPayload.text).toContain('Source: D1 runtime state');
+    } finally {
+      global.fetch = prevFetch;
+    }
+  });
+
+  it('rotates access phrase from telegram admin command', async () => {
+    const db = createDbMock();
+    const env = createEnv({ db, adminChatIds: '1001' });
+    env.SITE_ACCESS_PHRASE = 'old-secret';
+
+    const fetchMock = vi.fn(async (url) => {
+      if (url.includes('/sendMessage')) return { json: async () => ({ ok: true }) };
+      throw new Error(`Unexpected fetch URL: ${url}`);
+    });
+    const prevFetch = global.fetch;
+    global.fetch = fetchMock;
+
+    try {
+      const rotateResponse = await worker.fetch(
+        new Request('https://example.com/tg', {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            'X-Telegram-Bot-Api-Secret-Token': env.TG_WEBHOOK_SECRET,
+          },
+          body: JSON.stringify({
+            message: {
+              text: '/rotateaccess new-secret-2026',
+              chat: { id: 1001 },
+              from: { username: 'admin' },
+            },
+          }),
+        }),
+        env
+      );
+      expect(rotateResponse.status).toBe(200);
+
+      const sendMessageCalls = fetchMock.mock.calls.filter(([url]) =>
+        String(url).includes('/sendMessage')
+      );
+      expect(sendMessageCalls).toHaveLength(1);
+      const sendPayload = JSON.parse(sendMessageCalls[0][1].body);
+      expect(sendPayload.text).toContain('Access phrase rotated');
+      expect(sendPayload.text).toContain('Current: new-secret-2026');
+      expect(sendPayload.text).toContain('Previous: old-secret');
+
+      const unlockWithNew = await worker.fetch(
+        new Request('https://example.com/api/unlock', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ secretWord: 'new-secret-2026' }),
+        }),
+        env
+      );
+      expect(unlockWithNew.status).toBe(200);
+
+      const unlockWithOld = await worker.fetch(
+        new Request('https://example.com/api/unlock', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ secretWord: 'old-secret' }),
+        }),
+        env
+      );
+      expect(unlockWithOld.status).toBe(200);
     } finally {
       global.fetch = prevFetch;
     }

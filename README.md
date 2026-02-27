@@ -9,7 +9,7 @@ Cloudflare Workers project for postcard exchange:
 
 - Runtime: Cloudflare Workers (`src/worker.js`)
 - Frontend: static HTML/CSS/JS from `public/`
-- Database: Cloudflare D1 (`cards`, `requests`, `admin_actions`, `admin_events`, `analytics_daily`)
+- Database: Cloudflare D1 (`cards`, `requests`, `admin_actions`, `admin_events`, `analytics_daily`, `site_access_state`)
 - Media storage: Cloudflare R2 bucket (`postcards`)
 - Bot integration: Telegram Bot API webhooks
 - Tests: Vitest (`src/worker.test.js`, `public/app.test.js`)
@@ -25,6 +25,7 @@ Cloudflare Workers project for postcard exchange:
   - upload new postcards from chat
   - delete single postcard or bulk delete from request message
   - recent admin events and analytics commands
+  - view and rotate private access phrase (`/accessword`, `/rotateaccess`)
 
 ## Project Structure
 
@@ -73,9 +74,9 @@ Configured in `wrangler.jsonc`:
 - `TG_STRICT_WEBHOOK_SECRET` - strict mode for webhook secret checking (`true/1`)
 - `ADMIN_CHAT_ID` - single admin chat ID
 - `ADMIN_CHAT_IDS` - optional comma-separated admin chat IDs
-- `SITE_ACCESS_PHRASE` - enables private access gate (secret word for site visitors)
-- `SITE_ACCESS_PHRASE_PREVIOUS` - optional previous phrase accepted during rotation
-- `SITE_ACCESS_PHRASES` - optional comma-separated phrases (overrides single/previous vars)
+- `SITE_ACCESS_PHRASE` - enables private access gate (secret word for site visitors; initial/fallback value)
+- `SITE_ACCESS_PHRASE_PREVIOUS` - optional previous phrase accepted during rotation (fallback)
+- `SITE_ACCESS_PHRASES` - optional comma-separated phrases (fallback; overrides single/previous vars)
 - `SITE_ACCESS_SIGNING_KEY` - optional separate key for access cookie signature
 - `SITE_ACCESS_SIGNING_KEYS` - optional comma-separated signing keys accepted for cookie validation
 - `SITE_ACCESS_TTL_DAYS` - optional access lifetime in days (`14` by default)
@@ -98,6 +99,7 @@ Current migrations:
 - `0001_add_category.sql`
 - `0002_admin_actions.sql`
 - `0003_reservations_audit_analytics.sql`
+- `0004_site_access_state.sql`
 
 ## Deploy
 
