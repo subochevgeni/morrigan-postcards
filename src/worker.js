@@ -1467,6 +1467,7 @@ export default {
       return json({
         turnstileSiteKey: String(env.TURNSTILE_SITE_KEY || ''),
         siteUrl: String(env.SITE_URL || 'https://subach.uk'),
+        accessGateEnabled: isAccessGateEnabled(env),
       });
     }
 

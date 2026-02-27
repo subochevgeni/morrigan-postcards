@@ -1,5 +1,6 @@
 let TURNSTILE_SITE_KEY = ''; // fetched from /api/config (public site key)
 let SITE_URL = 'https://subach.uk';
+let ACCESS_GATE_ENABLED = false;
 
 async function fetchConfig() {
   try {
@@ -11,6 +12,7 @@ async function fetchConfig() {
     const d = await r.json().catch(() => ({}));
     TURNSTILE_SITE_KEY = d.turnstileSiteKey || '';
     SITE_URL = d.siteUrl || SITE_URL;
+    ACCESS_GATE_ENABLED = Boolean(d.accessGateEnabled);
   } catch (e) {
     console.warn('Config fetch error:', e);
   }
@@ -48,6 +50,12 @@ const reqMsg = $('reqMsg');
 const reqWebsite = $('reqWebsite');
 const reqStatus = $('reqStatus');
 const reqSubmit = $('reqSubmit');
+
+function syncAccessGateUI() {
+  if (!logoutBtn) return;
+  logoutBtn.hidden = !ACCESS_GATE_ENABLED;
+  logoutBtn.style.display = ACCESS_GATE_ENABLED ? '' : 'none';
+}
 
 let items = [];
 let currentId = null;
@@ -253,7 +261,10 @@ if (logoutBtn) {
   logoutBtn.onclick = async () => {
     logoutBtn.disabled = true;
     try {
-      await fetch('/api/logout', { method: 'POST' });
+      const r = await fetch('/api/logout', { method: 'POST' });
+      if (!r.ok) {
+        console.warn('Logout failed with status:', r.status);
+      }
     } catch (e) {
       console.warn('Logout request failed:', e);
     } finally {
@@ -529,6 +540,7 @@ form.addEventListener('submit', async (e) => {
 
 (async () => {
   await fetchConfig();
+  syncAccessGateUI();
 
   if (!TURNSTILE_SITE_KEY) {
     TURNSTILE_SITE_KEY = '0x4AAAAAACW5TtAmWWLLFZ7V';
