@@ -1,1 +1,5 @@
 coverage/
+.wrangler/
+node_modules/.cache/wrangler/
+.env
+.env.*
