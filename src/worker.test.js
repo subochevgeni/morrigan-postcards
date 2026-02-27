@@ -682,6 +682,100 @@ describe('worker.fetch integration', () => {
     };
   }
 
+  it('returns access gate page when private access is enabled and no cookie provided', async () => {
+    const env = createEnv();
+    env.SITE_ACCESS_PHRASE = 'morrigan-open';
+
+    const response = await worker.fetch(new Request('https://example.com/'), env);
+    const html = await response.text();
+
+    expect(response.status).toBe(401);
+    expect(response.headers.get('content-type')).toContain('text/html');
+    expect(html).toContain('Private Access');
+    expect(env.ASSETS.fetch).not.toHaveBeenCalled();
+  });
+
+  it('accepts valid secret phrase on /api/unlock', async () => {
+    const env = createEnv();
+    env.SITE_ACCESS_PHRASE = 'morrigan-open';
+    env.SITE_ACCESS_SIGNING_KEY = 'signing-secret';
+
+    const unlockResponse = await worker.fetch(
+      new Request('https://example.com/api/unlock', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ secretWord: 'morrigan-open' }),
+      }),
+      env
+    );
+
+    expect(unlockResponse.status).toBe(200);
+  });
+
+  it('rejects invalid secret phrase on unlock', async () => {
+    const env = createEnv();
+    env.SITE_ACCESS_PHRASE = 'morrigan-open';
+
+    const response = await worker.fetch(
+      new Request('https://example.com/api/unlock', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ secretWord: 'wrong-secret' }),
+      }),
+      env
+    );
+
+    expect(response.status).toBe(401);
+    expect(await response.text()).toBe('forbidden');
+  });
+
+  it('accepts previous secret phrase during rotation', async () => {
+    const env = createEnv();
+    env.SITE_ACCESS_PHRASE = 'new-secret';
+    env.SITE_ACCESS_PHRASE_PREVIOUS = 'old-secret';
+
+    const response = await worker.fetch(
+      new Request('https://example.com/api/unlock', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ secretWord: 'old-secret' }),
+      }),
+      env
+    );
+
+    expect(response.status).toBe(200);
+  });
+
+  it('returns locked response for API routes when private access is enabled', async () => {
+    const env = createEnv();
+    env.SITE_ACCESS_PHRASE = 'morrigan-open';
+
+    const response = await worker.fetch(
+      new Request('https://example.com/api/categories', { method: 'GET' }),
+      env
+    );
+    const data = await response.json();
+
+    expect(response.status).toBe(401);
+    expect(data).toMatchObject({ ok: false, error: 'locked' });
+  });
+
+  it('logs out by clearing access session endpoint', async () => {
+    const env = createEnv();
+    env.SITE_ACCESS_PHRASE = 'morrigan-open';
+
+    const response = await worker.fetch(
+      new Request('https://example.com/api/logout', {
+        method: 'POST',
+      }),
+      env
+    );
+    const data = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(data).toMatchObject({ ok: true });
+  });
+
   it('returns categories list from /api/categories', async () => {
     const env = createEnv();
     const response = await worker.fetch(

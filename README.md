@@ -73,6 +73,16 @@ Configured in `wrangler.jsonc`:
 - `TG_STRICT_WEBHOOK_SECRET` - strict mode for webhook secret checking (`true/1`)
 - `ADMIN_CHAT_ID` - single admin chat ID
 - `ADMIN_CHAT_IDS` - optional comma-separated admin chat IDs
+- `SITE_ACCESS_PHRASE` - enables private access gate (secret word for site visitors)
+- `SITE_ACCESS_PHRASE_PREVIOUS` - optional previous phrase accepted during rotation
+- `SITE_ACCESS_PHRASES` - optional comma-separated phrases (overrides single/previous vars)
+- `SITE_ACCESS_SIGNING_KEY` - optional separate key for access cookie signature
+- `SITE_ACCESS_SIGNING_KEYS` - optional comma-separated signing keys accepted for cookie validation
+- `SITE_ACCESS_TTL_DAYS` - optional access lifetime in days (`14` by default)
+
+Private access endpoints:
+- `POST /api/unlock` - validates secret word and sets access cookie
+- `POST /api/logout` - clears access cookie
 
 ## Database
 

@@ -21,6 +21,326 @@ const CATEGORIES = {
 };
 
 const CATEGORY_SLUGS = Object.keys(CATEGORIES);
+const ACCESS_COOKIE_NAME = 'mpe_access';
+const ACCESS_DEFAULT_TTL_DAYS = 14;
+
+function base64UrlFromArrayBuffer(buf) {
+  const bytes = new Uint8Array(buf);
+  let bin = '';
+  for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+  return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
+}
+
+async function hmacSignBase64Url(secret, payload) {
+  const enc = new TextEncoder();
+  const key = await crypto.subtle.importKey(
+    'raw',
+    enc.encode(secret),
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign']
+  );
+  const sig = await crypto.subtle.sign('HMAC', key, enc.encode(payload));
+  return base64UrlFromArrayBuffer(sig);
+}
+
+async function securePhraseMatch(actualPhrase, candidatePhrase) {
+  const enc = new TextEncoder();
+  const digest = async (v) => crypto.subtle.digest('SHA-256', enc.encode(v));
+  const [a, b] = await Promise.all([digest(actualPhrase), digest(candidatePhrase)]);
+  const aa = new Uint8Array(a);
+  const bb = new Uint8Array(b);
+  if (aa.length !== bb.length) return false;
+  let diff = 0;
+  for (let i = 0; i < aa.length; i++) diff |= aa[i] ^ bb[i];
+  return diff === 0;
+}
+
+function parseCookies(request) {
+  const raw = String(request.headers.get('cookie') || '');
+  const out = {};
+  for (const part of raw.split(';')) {
+    const idx = part.indexOf('=');
+    if (idx <= 0) continue;
+    const k = part.slice(0, idx).trim();
+    const v = part.slice(idx + 1).trim();
+    if (!k) continue;
+    out[k] = v;
+  }
+  return out;
+}
+
+function getAccessPhrase(env) {
+  return String(env.SITE_ACCESS_PHRASE || '').trim();
+}
+
+function getAccessPhrases(env) {
+  const csv = String(env.SITE_ACCESS_PHRASES || '').trim();
+  if (csv) {
+    return Array.from(
+      new Set(
+        csv
+          .split(',')
+          .map((x) => x.trim())
+          .filter(Boolean)
+      )
+    );
+  }
+
+  return Array.from(
+    new Set(
+      [getAccessPhrase(env), String(env.SITE_ACCESS_PHRASE_PREVIOUS || '').trim()].filter(Boolean)
+    )
+  );
+}
+
+function isAccessGateEnabled(env) {
+  return getAccessPhrases(env).length > 0;
+}
+
+function getAccessTtlDays(env) {
+  const raw = Number(env.SITE_ACCESS_TTL_DAYS || ACCESS_DEFAULT_TTL_DAYS);
+  if (!Number.isFinite(raw)) return ACCESS_DEFAULT_TTL_DAYS;
+  return Math.min(Math.max(Math.floor(raw), 1), 90);
+}
+
+function getAccessSigningKey(env) {
+  return String(env.SITE_ACCESS_SIGNING_KEY || getAccessPhrase(env));
+}
+
+function getAccessSigningKeys(env) {
+  const csv = String(env.SITE_ACCESS_SIGNING_KEYS || '').trim();
+  if (csv) {
+    return Array.from(
+      new Set(
+        csv
+          .split(',')
+          .map((x) => x.trim())
+          .filter(Boolean)
+      )
+    );
+  }
+
+  return Array.from(
+    new Set(
+      [
+        String(env.SITE_ACCESS_SIGNING_KEY || '').trim(),
+        ...getAccessPhrases(env),
+        getAccessSigningKey(env),
+      ].filter(Boolean)
+    )
+  );
+}
+
+async function createAccessToken(env) {
+  const ttlDays = getAccessTtlDays(env);
+  const expiresAt = Date.now() + ttlDays * 24 * 60 * 60 * 1000;
+  const payload = `mpe-access:${expiresAt}`;
+  const signingKeys = getAccessSigningKeys(env);
+  const primaryKey = signingKeys[0];
+  const sig = await hmacSignBase64Url(primaryKey, payload);
+  return `${expiresAt}.${sig}`;
+}
+
+async function verifyAccessToken(env, token) {
+  const [expiresRaw, sig] = String(token || '').split('.');
+  const expiresAt = Number(expiresRaw || 0);
+  if (!Number.isFinite(expiresAt) || expiresAt <= Date.now()) return false;
+  if (!sig) return false;
+  const payload = `mpe-access:${expiresAt}`;
+  for (const key of getAccessSigningKeys(env)) {
+    const expected = await hmacSignBase64Url(key, payload);
+    if (expected === sig) return true;
+  }
+  return false;
+}
+
+function buildAccessCookie(env, token) {
+  const maxAge = getAccessTtlDays(env) * 24 * 60 * 60;
+  return `${ACCESS_COOKIE_NAME}=${token}; Max-Age=${maxAge}; Path=/; HttpOnly; Secure; SameSite=Lax`;
+}
+
+function buildAccessCookieExpired() {
+  return `${ACCESS_COOKIE_NAME}=; Max-Age=0; Path=/; HttpOnly; Secure; SameSite=Lax`;
+}
+
+async function isAccessAuthorized(request, env) {
+  if (!isAccessGateEnabled(env)) return true;
+  const cookies = parseCookies(request);
+  const token = cookies[ACCESS_COOKIE_NAME];
+  if (!token) return false;
+  return verifyAccessToken(env, token);
+}
+
+function buildAccessGatePage(ttlDays = ACCESS_DEFAULT_TTL_DAYS) {
+  const html = `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Private Access</title>
+  <style>
+    :root { color-scheme: light; }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      font-family: "Space Grotesk", "Segoe UI", sans-serif;
+      background: radial-gradient(circle at 10% 20%, #f4ede3 0%, #f7f3ec 45%, #ebe4d8 100%);
+      color: #2f2a25;
+      padding: 20px;
+    }
+    .card {
+      width: min(560px, 100%);
+      border-radius: 20px;
+      padding: 28px;
+      background: rgba(255, 255, 255, 0.85);
+      border: 1px solid #d6cbb8;
+      box-shadow: 0 20px 45px rgba(62, 44, 24, 0.14);
+      backdrop-filter: blur(6px);
+    }
+    .eyebrow {
+      font-size: 12px;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      color: #7f6548;
+      margin-bottom: 10px;
+    }
+    h1 { margin: 0 0 10px; font-size: 28px; line-height: 1.2; }
+    p { margin: 0 0 18px; color: #5c4b37; }
+    .row { display: grid; grid-template-columns: 1fr auto; gap: 10px; }
+    input {
+      width: 100%;
+      padding: 14px;
+      border-radius: 12px;
+      border: 1px solid #c8b8a2;
+      background: #fffcf6;
+      font-size: 16px;
+      color: #2f2a25;
+    }
+    button {
+      border: 0;
+      border-radius: 12px;
+      padding: 0 18px;
+      font-size: 15px;
+      font-weight: 600;
+      cursor: pointer;
+      background: #2f2a25;
+      color: #fff8ef;
+    }
+    .status {
+      min-height: 22px;
+      margin-top: 12px;
+      font-size: 14px;
+      color: #8a2f2f;
+    }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="eyebrow">Morrigan Postcard Exchange</div>
+    <h1>Private Access</h1>
+    <p>Enter your secret word to open the portal. Access stays active for ${ttlDays} day${ttlDays === 1 ? '' : 's'} on this device.</p>
+    <form id="unlockForm">
+      <div class="row">
+        <input id="secretWord" name="secretWord" type="password" autocomplete="off" placeholder="Secret word" required />
+        <button type="submit">Open</button>
+      </div>
+      <div id="status" class="status" aria-live="polite"></div>
+    </form>
+  </div>
+  <script>
+    const form = document.getElementById('unlockForm');
+    const statusEl = document.getElementById('status');
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      statusEl.textContent = '';
+      const secretWord = String(document.getElementById('secretWord').value || '').trim();
+      if (!secretWord) {
+        statusEl.textContent = 'Enter the secret word.';
+        return;
+      }
+      try {
+        const r = await fetch('/api/unlock', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ secretWord }),
+        });
+        if (!r.ok) {
+          statusEl.textContent = 'Access denied. Check the secret word and try again.';
+          return;
+        }
+        location.reload();
+      } catch {
+        statusEl.textContent = 'Network error. Please try again.';
+      }
+    });
+  </script>
+</body>
+</html>`;
+  return new Response(html, {
+    status: 401,
+    headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' },
+  });
+}
+
+function buildLockedApiResponse() {
+  return json({ ok: false, error: 'locked' }, 401);
+}
+
+function buildSecretPhraseCandidates(env) {
+  return getAccessPhrases(env);
+}
+
+async function handleSiteUnlock(request, env) {
+  if (!isAccessGateEnabled(env)) return text('not found', 404);
+  if (request.method !== 'POST') return text('method not allowed', 405);
+
+  let body = {};
+  try {
+    body = await request.json();
+  } catch {
+    return text('bad json', 400);
+  }
+
+  const supplied = String(body?.secretWord || body?.secret || '').trim();
+  if (!supplied) return text('secret required', 400);
+
+  const candidates = buildSecretPhraseCandidates(env);
+  let ok = false;
+  for (const phrase of candidates) {
+    if (await securePhraseMatch(phrase, supplied)) {
+      ok = true;
+      break;
+    }
+  }
+  if (!ok) return text('forbidden', 401);
+
+  const token = await createAccessToken(env);
+  return new Response(JSON.stringify({ ok: true }), {
+    status: 200,
+    headers: {
+      'content-type': 'application/json; charset=utf-8',
+      'cache-control': 'no-store',
+      'set-cookie': buildAccessCookie(env, token),
+    },
+  });
+}
+
+async function handleSiteLogout(request, env) {
+  if (!isAccessGateEnabled(env)) return text('not found', 404);
+  if (request.method !== 'POST') return text('method not allowed', 405);
+  return new Response(JSON.stringify({ ok: true }), {
+    status: 200,
+    headers: {
+      'content-type': 'application/json; charset=utf-8',
+      'cache-control': 'no-store',
+      'set-cookie': buildAccessCookieExpired(),
+    },
+  });
+}
 
 function normalizeCategory(caption) {
   if (!caption || typeof caption !== 'string') return 'other';
@@ -1129,6 +1449,17 @@ export default {
     const url = new URL(request.url);
 
     if (url.pathname === '/tg') return handleTelegram(request, env);
+    if (url.pathname === '/api/unlock') return handleSiteUnlock(request, env);
+    if (url.pathname === '/api/logout') return handleSiteLogout(request, env);
+
+    if (!(await isAccessAuthorized(request, env))) {
+      if (url.pathname.startsWith('/api/')) return buildLockedApiResponse();
+      if (request.method === 'GET' || request.method === 'HEAD') {
+        return buildAccessGatePage(getAccessTtlDays(env));
+      }
+      return text('locked', 401);
+    }
+
     if (url.pathname === '/api/cards') return listCards(env, url);
     if (url.pathname === '/api/request') return handleWebRequest(request, env);
 

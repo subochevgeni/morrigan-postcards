@@ -36,6 +36,7 @@ const modalCartTitle = $('modalCartTitle');
 const modalCartList = $('modalCartList');
 const copyBtn = $('copy');
 const cartBtn = $('cartBtn');
+const logoutBtn = $('logoutBtn');
 const cartCountEl = $('cartCount');
 const mobileCta = $('mobileCta');
 const mobileCtaCount = $('mobileCtaCount');
@@ -248,6 +249,18 @@ modal.onclick = (e) => {
 };
 if (cartBtn) cartBtn.onclick = () => openCartModal();
 if (mobileOpenCart) mobileOpenCart.onclick = () => openCartModal();
+if (logoutBtn) {
+  logoutBtn.onclick = async () => {
+    logoutBtn.disabled = true;
+    try {
+      await fetch('/api/logout', { method: 'POST' });
+    } catch (e) {
+      console.warn('Logout request failed:', e);
+    } finally {
+      location.reload();
+    }
+  };
+}
 window.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') closeModal();
 });
