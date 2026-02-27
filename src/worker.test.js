@@ -1078,6 +1078,7 @@ describe('worker.fetch integration', () => {
     });
     const prevFetch = global.fetch;
     global.fetch = fetchMock;
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
 
     try {
       const response = await worker.fetch(
@@ -1100,34 +1101,42 @@ describe('worker.fetch integration', () => {
       expect(response.status).toBe(200);
       expect(data).toEqual({ ok: true });
       expect(deletedCardIds).toEqual(['abc123']);
+      expect(logSpy).toHaveBeenCalledWith('tg webhook secret mismatch');
     } finally {
       global.fetch = prevFetch;
+      logSpy.mockRestore();
     }
   });
 
   it('rejects request in strict webhook secret mode when header mismatches', async () => {
     const env = createEnv({ strictWebhookSecret: '1' });
-    const response = await worker.fetch(
-      new Request('https://example.com/tg', {
-        method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          'X-Telegram-Bot-Api-Secret-Token': 'bad-secret',
-        },
-        body: JSON.stringify({
-          callback_query: {
-            id: 'cb_strict',
-            data: 'del:abc123',
-            from: { id: 1001, username: 'admin' },
-            message: { chat: { id: 1001 } },
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      const response = await worker.fetch(
+        new Request('https://example.com/tg', {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            'X-Telegram-Bot-Api-Secret-Token': 'bad-secret',
           },
+          body: JSON.stringify({
+            callback_query: {
+              id: 'cb_strict',
+              data: 'del:abc123',
+              from: { id: 1001, username: 'admin' },
+              message: { chat: { id: 1001 } },
+            },
+          }),
         }),
-      }),
-      env
-    );
+        env
+      );
 
-    expect(response.status).toBe(401);
-    expect(await response.text()).toBe('unauthorized');
+      expect(response.status).toBe(401);
+      expect(await response.text()).toBe('unauthorized');
+      expect(logSpy).toHaveBeenCalledWith('tg webhook secret mismatch');
+    } finally {
+      logSpy.mockRestore();
+    }
   });
 
   it('sends explicit message when single delete target is already missing', async () => {
