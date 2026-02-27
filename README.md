@@ -9,7 +9,7 @@ Cloudflare Workers project for postcard exchange:
 
 - Runtime: Cloudflare Workers (`src/worker.js`)
 - Frontend: static HTML/CSS/JS from `public/`
-- Database: Cloudflare D1 (`cards`, `requests`, `admin_actions`, `admin_events`, `analytics_daily`, `site_access_state`)
+- Database: Cloudflare D1 (`cards`, `requests`, `exchange_proposals`, `admin_actions`, `admin_events`, `analytics_daily`, `site_access_state`)
 - Media storage: Cloudflare R2 bucket (`postcards`)
 - Bot integration: Telegram Bot API webhooks
 - Tests: Vitest (`src/worker.test.js`, `public/app.test.js`)
@@ -18,6 +18,7 @@ Cloudflare Workers project for postcard exchange:
 
 - Browse postcards with category filter and search by ID
 - Add postcards to cart and send one request for multiple items
+- Optional exchange-offer mode: user can request up to 3 cards and attach up to 3 offered cards
 - Automatic card reservation (`pending`) after request to prevent race conditions
 - Duplicate request suppression window
 - Auto-refreshing gallery without full page reload
@@ -100,6 +101,7 @@ Current migrations:
 - `0002_admin_actions.sql`
 - `0003_reservations_audit_analytics.sql`
 - `0004_site_access_state.sql`
+- `0005_exchange_proposals.sql`
 
 ## Deploy
 
@@ -111,7 +113,7 @@ npx wrangler deploy
 
 - `GET /api/cards` - list cards for website (supports category filter)
 - `GET /api/categories` - available categories
-- `POST /api/request` - submit postcard request (Turnstile protected)
+- `POST /api/request` - submit postcard request or exchange offer (Turnstile protected)
 - `GET /api/config` - public runtime config for frontend
 - `POST /tg` - Telegram webhook endpoint
 

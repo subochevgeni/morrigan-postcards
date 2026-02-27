@@ -358,6 +358,7 @@ describe('worker.fetch integration', () => {
     availableIds = [],
     cards = [],
     insertedRequests = [],
+    insertedExchangeProposals = [],
     cardRecords = [],
     deletedCardIds = [],
     adminActionRecords = [],
@@ -482,6 +483,25 @@ describe('worker.fetch integration', () => {
                     name: args[1],
                     message: args[2],
                     created_at: args[3],
+                  });
+                  return {};
+                },
+              };
+            }
+
+            if (
+              sql.includes(
+                'INSERT INTO exchange_proposals (requested_ids_json, offered_cards_json, name, message, created_at) VALUES (?1, ?2, ?3, ?4, ?5)'
+              )
+            ) {
+              return {
+                run: async () => {
+                  insertedExchangeProposals.push({
+                    requested_ids_json: args[0],
+                    offered_cards_json: args[1],
+                    name: args[2],
+                    message: args[3],
+                    created_at: args[4],
                   });
                   return {};
                 },
@@ -936,6 +956,148 @@ describe('worker.fetch integration', () => {
       expect(callbackData).toContain('del:def456');
       expect(createdAdminActions).toHaveLength(1);
       expect(createdAdminActions[0].action_type).toBe('bulk_delete_cards');
+    } finally {
+      global.fetch = prevFetch;
+    }
+  });
+
+  it('handles exchange offer request with up to 3 requested and 3 offered postcards', async () => {
+    const insertedRequests = [];
+    const insertedExchangeProposals = [];
+    const db = createDbMock({
+      availableIds: ['abc123', 'def456', 'ghi789'],
+      insertedRequests,
+      insertedExchangeProposals,
+    });
+    const env = createEnv({ db });
+
+    const fetchMock = vi.fn(async (url) => {
+      if (url.includes('/turnstile/v0/siteverify')) {
+        return { json: async () => ({ success: true, hostname: 'example.com' }) };
+      }
+      if (url.includes('/sendMessage')) return { json: async () => ({ ok: true }) };
+      if (url.includes('/sendMediaGroup')) return { json: async () => ({ ok: true }) };
+      if (url.includes('/sendPhoto')) return { json: async () => ({ ok: true }) };
+      throw new Error(`Unexpected fetch URL: ${url}`);
+    });
+    const prevFetch = global.fetch;
+    global.fetch = fetchMock;
+
+    try {
+      const response = await worker.fetch(
+        new Request('https://example.com/api/request', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            ids: ['abc123', 'def456', 'ghi789'],
+            name: 'John Doe',
+            message: 'Swap with my cards',
+            exchangeOffer: true,
+            offeredCards: ['Card A', 'Card B', 'Card C'],
+            turnstileToken: 'valid-token',
+          }),
+        }),
+        env
+      );
+      const data = await response.json();
+
+      expect(response.status).toBe(200);
+      expect(data).toEqual({ ok: true, exchange: true });
+      expect(insertedRequests).toHaveLength(3);
+      expect(insertedExchangeProposals).toHaveLength(1);
+      expect(insertedExchangeProposals[0]).toMatchObject({
+        name: 'John Doe',
+        message: 'Swap with my cards',
+      });
+      expect(insertedExchangeProposals[0].requested_ids_json).toContain('abc123');
+      expect(insertedExchangeProposals[0].offered_cards_json).toContain('Card A');
+
+      const sendMessageCalls = fetchMock.mock.calls.filter(([url]) =>
+        String(url).includes('/sendMessage')
+      );
+      expect(sendMessageCalls).toHaveLength(2);
+      const sendPayload = JSON.parse(sendMessageCalls[0][1].body);
+      expect(sendPayload.text).toContain('WEBSITE EXCHANGE OFFER');
+      expect(sendPayload.text).toContain('Offered by user (3)');
+    } finally {
+      global.fetch = prevFetch;
+    }
+  });
+
+  it('returns 400 when exchange request has more than 3 requested postcards', async () => {
+    const insertedExchangeProposals = [];
+    const db = createDbMock({
+      availableIds: ['abc123', 'def456', 'ghi789', 'jkl000'],
+      insertedExchangeProposals,
+    });
+    const env = createEnv({ db });
+
+    const fetchMock = vi.fn(async (url) => {
+      if (url.includes('/turnstile/v0/siteverify')) {
+        return { json: async () => ({ success: true, hostname: 'example.com' }) };
+      }
+      throw new Error(`Unexpected fetch URL: ${url}`);
+    });
+    const prevFetch = global.fetch;
+    global.fetch = fetchMock;
+
+    try {
+      const response = await worker.fetch(
+        new Request('https://example.com/api/request', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            ids: ['abc123', 'def456', 'ghi789', 'jkl000'],
+            name: 'John Doe',
+            exchangeOffer: true,
+            offeredCards: ['Card A'],
+            turnstileToken: 'valid-token',
+          }),
+        }),
+        env
+      );
+      const responseText = await response.text();
+
+      expect(response.status).toBe(400);
+      expect(responseText).toBe('too many requested cards');
+      expect(insertedExchangeProposals).toHaveLength(0);
+    } finally {
+      global.fetch = prevFetch;
+    }
+  });
+
+  it('returns 400 when exchange request has no offered postcards', async () => {
+    const db = createDbMock({ availableIds: ['abc123'] });
+    const env = createEnv({ db });
+
+    const fetchMock = vi.fn(async (url) => {
+      if (url.includes('/turnstile/v0/siteverify')) {
+        return { json: async () => ({ success: true, hostname: 'example.com' }) };
+      }
+      throw new Error(`Unexpected fetch URL: ${url}`);
+    });
+    const prevFetch = global.fetch;
+    global.fetch = fetchMock;
+
+    try {
+      const response = await worker.fetch(
+        new Request('https://example.com/api/request', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            id: 'abc123',
+            name: 'John Doe',
+            exchangeOffer: true,
+            offeredCards: [],
+            turnstileToken: 'valid-token',
+          }),
+        }),
+        env
+      );
+      const responseText = await response.text();
+
+      expect(response.status).toBe(400);
+      expect(responseText).toBe('offered cards required');
     } finally {
       global.fetch = prevFetch;
     }

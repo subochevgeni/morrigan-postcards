@@ -970,6 +970,16 @@ async function dbList(env, limit) {
   return (results || []).map((r) => r.id);
 }
 
+async function dbInsertExchangeProposal(env, { postcardIds, offeredCards, name, message, createdAt }) {
+  const idsJson = JSON.stringify(cleanPostcardIds(postcardIds, MAX_CART_IDS));
+  const offersJson = JSON.stringify(offeredCards);
+  await env.DB.prepare(
+    'INSERT INTO exchange_proposals (requested_ids_json, offered_cards_json, name, message, created_at) VALUES (?1, ?2, ?3, ?4, ?5)'
+  )
+    .bind(idsJson, offersJson, name, message || null, createdAt)
+    .run();
+}
+
 function getSiteUrl(env) {
   return String(env.SITE_URL || 'https://subach.uk').replace(/\/$/, '');
 }
@@ -1001,6 +1011,50 @@ function buildAdminRequestText({ postcardIds, name, message, siteUrl, createdAt 
   );
 }
 
+function buildAdminExchangeOfferText({ postcardIds, offeredCards, name, message, siteUrl, createdAt }) {
+  const ids = cleanPostcardIds(Array.isArray(postcardIds) ? postcardIds : [postcardIds], 20);
+  const offers = Array.isArray(offeredCards) ? offeredCards : [];
+  const isMulti = ids.length > 1;
+  const idsBlock = isMulti
+    ? `📮 Requested IDs (${ids.length}):\n${ids.map((id) => `• ${id}`).join('\n')}`
+    : `📮 Requested ID: ${ids[0] || '—'}`;
+  const offersBlock = offers.length
+    ? `🎁 Offered by user (${offers.length}):\n${offers.map((x) => `• ${x}`).join('\n')}`
+    : '🎁 Offered by user: —';
+  const siteLink = isMulti ? siteUrl : `${siteUrl}/#${ids[0] || ''}`;
+
+  return (
+    `🔁 WEBSITE EXCHANGE OFFER${isMulti ? ' · MULTI' : ''}\n` +
+    `${REQUEST_VISUAL_DIVIDER}\n` +
+    `${idsBlock}\n` +
+    `${offersBlock}\n` +
+    `👤 Name: ${name}\n` +
+    `💬 Message: ${message || '—'}\n` +
+    `🕒 ${formatRequestTimestamp(createdAt)}\n` +
+    `🌐 ${siteLink}`
+  );
+}
+
+const MAX_CART_IDS = 20;
+const MAX_EXCHANGE_REQUEST_IDS = 3;
+const MAX_EXCHANGE_OFFER_CARDS = 3;
+const MAX_EXCHANGE_OFFER_CARD_LEN = 160;
+
+function normalizeOfferedCards(raw, limit = MAX_EXCHANGE_OFFER_CARDS) {
+  const list = Array.isArray(raw) ? raw : [];
+  const clean = Array.from(
+    new Set(
+      list
+        .map((x) => String(x || '').trim().slice(0, MAX_EXCHANGE_OFFER_CARD_LEN))
+        .filter(Boolean)
+    )
+  );
+  return {
+    cards: clean.slice(0, limit),
+    total: clean.length,
+  };
+}
+
 async function notifyAdminsWithRequestCard(env, postcardId, requestText, imageUrl) {
   const url = imageUrl || `${getSiteUrl(env)}/thumb/${postcardId}.jpg`;
   const deleteKeyboard = buildDeleteInlineKeyboard([postcardId]);
@@ -1014,8 +1068,6 @@ async function notifyAdminsWithRequestCard(env, postcardId, requestText, imageUr
     await tgSendPhoto(env, adminId, url, `ID: ${postcardId}`);
   }
 }
-
-const MAX_CART_IDS = 20;
 
 async function notifyAdminsWithRequestCards(env, postcardIds, requestText) {
   const siteUrl = getSiteUrl(env);
@@ -1117,9 +1169,15 @@ async function handleWebRequest(request, env) {
     .trim()
     .slice(0, 600);
   const token = String(body?.turnstileToken || '').trim();
+  const exchangeMode = Boolean(body?.exchangeOffer) || Array.isArray(body?.offeredCards);
+  const offeredCards = normalizeOfferedCards(body?.offeredCards, MAX_EXCHANGE_OFFER_CARDS);
 
   if (!name) return text('name required', 400);
   if (!token) return text('turnstile required', 403);
+  if (exchangeMode && offeredCards.total === 0) return text('offered cards required', 400);
+  if (exchangeMode && offeredCards.total > MAX_EXCHANGE_OFFER_CARDS) {
+    return text('too many offered cards', 400);
+  }
 
   const ts = await verifyTurnstile(request, env, token);
   if (!ts.ok) return text('turnstile failed', 403);
@@ -1134,6 +1192,9 @@ async function handleWebRequest(request, env) {
       .filter((x) => /^[0-9a-z]{4,12}$/i.test(x))
       .slice(0, MAX_CART_IDS);
     if (postcardIds.length === 0) return text('bad id', 400);
+    if (exchangeMode && postcardIds.length > MAX_EXCHANGE_REQUEST_IDS) {
+      return text('too many requested cards', 400);
+    }
     const now = Date.now();
     if (await isDuplicateRequest(env, name, postcardIds, now)) {
       await trackAnalytics(env, 'request_deduped');
@@ -1155,18 +1216,41 @@ async function handleWebRequest(request, env) {
         .run();
     }
 
-    const requestText = buildAdminRequestText({
+    let requestText = buildAdminRequestText({
       postcardIds,
       name,
       message,
       siteUrl,
       createdAt: now,
     });
+    if (exchangeMode) {
+      try {
+        await dbInsertExchangeProposal(env, {
+          postcardIds,
+          offeredCards: offeredCards.cards,
+          name,
+          message,
+          createdAt: now,
+        });
+      } catch (e) {
+        if (isMissingTableError(e, 'exchange_proposals')) return text('exchange unavailable', 503);
+        throw e;
+      }
+      requestText = buildAdminExchangeOfferText({
+        postcardIds,
+        offeredCards: offeredCards.cards,
+        name,
+        message,
+        siteUrl,
+        createdAt: now,
+      });
+      await trackAnalytics(env, 'exchange_offer_sent', 1, now);
+    }
 
     await reserveCards(env, postcardIds, now);
     await trackAnalytics(env, 'request_sent', postcardIds.length, now);
     await notifyAdminsWithRequestCards(env, postcardIds, requestText);
-    return json({ ok: true });
+    return json(exchangeMode ? { ok: true, exchange: true } : { ok: true });
   }
 
   const postcardId = String(singleId || '').trim().toLowerCase();
@@ -1196,12 +1280,36 @@ async function handleWebRequest(request, env) {
     siteUrl,
     createdAt: now,
   });
+  let adminText = requestText;
+  if (exchangeMode) {
+    try {
+      await dbInsertExchangeProposal(env, {
+        postcardIds: [postcardId],
+        offeredCards: offeredCards.cards,
+        name,
+        message,
+        createdAt: now,
+      });
+    } catch (e) {
+      if (isMissingTableError(e, 'exchange_proposals')) return text('exchange unavailable', 503);
+      throw e;
+    }
+    adminText = buildAdminExchangeOfferText({
+      postcardIds: [postcardId],
+      offeredCards: offeredCards.cards,
+      name,
+      message,
+      siteUrl,
+      createdAt: now,
+    });
+    await trackAnalytics(env, 'exchange_offer_sent', 1, now);
+  }
 
   await reserveCards(env, [postcardId], now);
   await trackAnalytics(env, 'request_sent', 1, now);
-  await notifyAdminsWithRequestCard(env, postcardId, requestText);
+  await notifyAdminsWithRequestCard(env, postcardId, adminText);
 
-  return json({ ok: true });
+  return json(exchangeMode ? { ok: true, exchange: true } : { ok: true });
 }
 
 async function handleTelegram(request, env) {

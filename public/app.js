@@ -47,6 +47,9 @@ const mobileOpenCart = $('mobileOpenCart');
 const form = $('reqForm');
 const reqName = $('reqName');
 const reqMsg = $('reqMsg');
+const reqExchangeToggle = $('reqExchangeToggle');
+const reqExchangeFields = $('reqExchangeFields');
+const reqOfferCards = $('reqOfferCards');
 const reqWebsite = $('reqWebsite');
 const reqStatus = $('reqStatus');
 const reqSubmit = $('reqSubmit');
@@ -71,13 +74,19 @@ let gridHasLoadError = false;
 const AUTO_REFRESH_MS = 5000;
 const MODAL_CLOSE_DELAY_MS = 1200;
 const TURNSTILE_RESET_DELAY_MS = 200;
+const MAX_EXCHANGE_REQUEST_IDS = 3;
+const MAX_EXCHANGE_OFFER_CARDS = 3;
 const STATUS_MESSAGES = {
   missingName: '❌ Please enter your nickname / handle.',
   missingTurnstile: '❌ Please complete the anti-spam check (Turnstile).',
   pendingCard: '❌ This postcard is currently pending another request.',
   missingSelection: '❌ Please select a postcard or add some to the cart first.',
+  tooManyExchangeRequested: '❌ Exchange mode supports up to 3 requested postcards.',
+  missingOfferedCards: '❌ Add 1-3 postcards you offer (one per line).',
+  tooManyOfferedCards: '❌ You can offer at most 3 postcards.',
   deduped: 'ℹ️ Similar request was already sent recently. We will still review it.',
   sent: '✅ Request sent! We will review it and contact you.',
+  exchangeSent: '✅ Exchange offer sent! We will review it and contact you.',
   notFound: '❌ Sorry — this postcard is no longer available.',
   antiSpamFailed: '❌ Anti-spam failed. Please retry.',
   networkError: '❌ Network error. Please try again.',
@@ -126,8 +135,39 @@ function closeModalLater(delay = MODAL_CLOSE_DELAY_MS) {
   setTimeout(closeModal, delay);
 }
 
-function handleRequestSuccess(isCart, deduped) {
-  reqStatus.textContent = deduped ? STATUS_MESSAGES.deduped : STATUS_MESSAGES.sent;
+function syncExchangeOfferUI() {
+  if (!reqExchangeFields || !reqExchangeToggle) return;
+  reqExchangeFields.classList.toggle('hidden', !reqExchangeToggle.checked);
+}
+
+function normalizeOfferedCardsInput(rawText, limit = MAX_EXCHANGE_OFFER_CARDS) {
+  const unique = Array.from(
+    new Set(
+      String(rawText || '')
+        .split('\n')
+        .map((x) => x.trim())
+        .filter(Boolean)
+    )
+  );
+  return {
+    cards: unique.slice(0, limit),
+    total: unique.length,
+  };
+}
+
+function resetRequestDraft() {
+  reqStatus.textContent = '';
+  reqName.value = '';
+  reqMsg.value = '';
+  reqWebsite.value = '';
+  if (reqOfferCards) reqOfferCards.value = '';
+  if (reqExchangeToggle) reqExchangeToggle.checked = false;
+  syncExchangeOfferUI();
+}
+
+function handleRequestSuccess({ isCart, deduped, exchange }) {
+  if (deduped) reqStatus.textContent = STATUS_MESSAGES.deduped;
+  else reqStatus.textContent = exchange ? STATUS_MESSAGES.exchangeSent : STATUS_MESSAGES.sent;
   if (isCart) {
     cartIds = [];
     updateCartUI();
@@ -167,10 +207,7 @@ function openModal(item) {
     setTimeout(() => (copyBtn.textContent = 'Copy ID'), 900);
   };
 
-  reqStatus.textContent = '';
-  reqName.value = '';
-  reqMsg.value = '';
-  reqWebsite.value = '';
+  resetRequestDraft();
 
   setTimeout(() => resetTurnstile(), 150);
   location.hash = item.id;
@@ -235,7 +272,7 @@ function openCartModal() {
     renderCartModalContent();
   }
 
-  reqStatus.textContent = '';
+  resetRequestDraft();
   setTimeout(() => resetTurnstile(), 150);
   modal.classList.remove('hidden');
   modal.setAttribute('aria-hidden', 'false');
@@ -271,6 +308,9 @@ if (logoutBtn) {
       location.reload();
     }
   };
+}
+if (reqExchangeToggle) {
+  reqExchangeToggle.onchange = syncExchangeOfferUI;
 }
 window.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') closeModal();
@@ -481,6 +521,8 @@ form.addEventListener('submit', async (e) => {
 
   const name = reqName.value.trim();
   const message = reqMsg.value.trim();
+  const exchangeMode = Boolean(reqExchangeToggle?.checked);
+  const offeredCards = normalizeOfferedCardsInput(reqOfferCards ? reqOfferCards.value : '');
 
   if (!name) {
     reqStatus.textContent = STATUS_MESSAGES.missingName;
@@ -502,6 +544,18 @@ form.addEventListener('submit', async (e) => {
     reqStatus.textContent = STATUS_MESSAGES.missingSelection;
     return;
   }
+  if (exchangeMode && isCart && cartIds.length > MAX_EXCHANGE_REQUEST_IDS) {
+    reqStatus.textContent = STATUS_MESSAGES.tooManyExchangeRequested;
+    return;
+  }
+  if (exchangeMode && offeredCards.total === 0) {
+    reqStatus.textContent = STATUS_MESSAGES.missingOfferedCards;
+    return;
+  }
+  if (exchangeMode && offeredCards.total > MAX_EXCHANGE_OFFER_CARDS) {
+    reqStatus.textContent = STATUS_MESSAGES.tooManyOfferedCards;
+    return;
+  }
 
   const payload = {
     name,
@@ -511,6 +565,10 @@ form.addEventListener('submit', async (e) => {
   };
   if (isCart) payload.ids = cartIds.slice();
   else payload.id = currentId;
+  if (exchangeMode) {
+    payload.exchangeOffer = true;
+    payload.offeredCards = offeredCards.cards;
+  }
 
   reqSubmit.disabled = true;
   reqStatus.textContent = 'Sending…';
@@ -524,7 +582,11 @@ form.addEventListener('submit', async (e) => {
 
     if (r.ok) {
       const payloadData = await r.json().catch(() => ({}));
-      handleRequestSuccess(isCart, Boolean(payloadData?.deduped));
+      handleRequestSuccess({
+        isCart,
+        deduped: Boolean(payloadData?.deduped),
+        exchange: Boolean(payloadData?.exchange),
+      });
     } else {
       const t = await r.text().catch(() => '');
       handleRequestFailure(r.status, t);
@@ -541,6 +603,7 @@ form.addEventListener('submit', async (e) => {
 (async () => {
   await fetchConfig();
   syncAccessGateUI();
+  syncExchangeOfferUI();
 
   if (!TURNSTILE_SITE_KEY) {
     TURNSTILE_SITE_KEY = '0x4AAAAAACW5TtAmWWLLFZ7V';

@@ -104,6 +104,22 @@
           <label for="reqMsg" class="sr-only">Message (optional)</label>
           <textarea id="reqMsg" placeholder="Message (optional)" aria-label="Optional message"></textarea>
 
+          <label class="exchange-toggle" for="reqExchangeToggle">
+            <input id="reqExchangeToggle" type="checkbox" />
+            <span>I want to offer my postcards in exchange</span>
+          </label>
+          <div id="reqExchangeFields" class="exchange-fields hidden">
+            <label for="reqOfferCards" class="sr-only">Your postcards to offer (one per line)</label>
+            <textarea
+              id="reqOfferCards"
+              placeholder="Your postcards to offer (one per line, max 3)\nExample: Finland - Northern Lights - https://example.com/photo"
+              aria-label="Your postcards to offer"
+            ></textarea>
+            <div class="exchange-hint">
+              Add 1-3 postcards you can send: ID, theme, or link to photo.
+            </div>
+          </div>
+
           <div class="tsRow">
           <div class="cf-turnstile" data-sitekey="" data-theme="dark"></div>
           </div>

@@ -515,7 +515,7 @@ main {
   margin-bottom: 3px;
 }
 
-.form input,
+.form input:not([type='checkbox']),
 .form textarea {
   width: 100%;
   padding: 10px 12px;
@@ -527,7 +527,7 @@ main {
   font-family: inherit;
 }
 
-.form input:focus-visible,
+.form input:not([type='checkbox']):focus-visible,
 .form textarea:focus-visible {
   border-color: #47c58a;
   box-shadow: 0 0 0 3px var(--focus);
@@ -536,6 +536,43 @@ main {
 .form textarea {
   min-height: 96px;
   resize: vertical;
+}
+
+.exchange-toggle {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 13px;
+  color: #d6e7e2;
+}
+
+.exchange-toggle input[type='checkbox'] {
+  width: 16px;
+  height: 16px;
+  margin-top: 2px;
+  accent-color: #2ab673;
+}
+
+.exchange-fields {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border-radius: var(--radius-m);
+  border: 1px dashed rgba(255, 255, 255, 0.22);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.exchange-fields.hidden {
+  display: none;
+}
+
+.exchange-fields textarea {
+  min-height: 90px;
+}
+
+.exchange-hint {
+  font-size: 12px;
+  opacity: 0.75;
 }
 
 .tsRow {
