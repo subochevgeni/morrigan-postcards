@@ -1,5 +1,5 @@
 {
-  "name": "hello",
+  "name": "morrigan-postcards",
   "version": "1.0.0",
   "description": "Cloudflare Workers postcard exchange portal with Telegram-based admin panel.",
   "main": "index.js",
