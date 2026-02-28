@@ -1,8 +1,8 @@
 {
   "name": "morrigan-postcards",
   "version": "1.0.0",
+  "private": true,
   "description": "Cloudflare Workers postcard exchange portal with Telegram-based admin panel.",
-  "main": "index.js",
   "type": "module",
   "scripts": {
     "test": "vitest run",
@@ -23,14 +23,12 @@
     "telegram-bot",
     "postcards"
   ],
-  "author": "",
   "license": "ISC",
   "bugs": {
     "url": "https://github.com/subochevgeni/morrigan-postcards/issues"
   },
   "homepage": "https://github.com/subochevgeni/morrigan-postcards#readme",
   "devDependencies": {
-    "@cloudflare/workers-types": "^4.20260131.0",
     "@vitest/coverage-v8": "^4.0.18",
     "eslint": "^8.45.0",
     "eslint-config-prettier": "^9.0.0",

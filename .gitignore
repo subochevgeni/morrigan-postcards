@@ -1,5 +1,6 @@
 coverage/
 .wrangler/
 node_modules/
+*.code-workspace
 .env
 .env.*
