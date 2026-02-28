@@ -14,7 +14,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/subochevgeni/Hello.git"
+    "url": "git+https://github.com/subochevgeni/morrigan-postcards.git"
   },
   "keywords": [
     "cloudflare-workers",
@@ -26,9 +26,9 @@
   "author": "",
   "license": "ISC",
   "bugs": {
-    "url": "https://github.com/subochevgeni/Hello/issues"
+    "url": "https://github.com/subochevgeni/morrigan-postcards/issues"
   },
-  "homepage": "https://github.com/subochevgeni/Hello#readme",
+  "homepage": "https://github.com/subochevgeni/morrigan-postcards#readme",
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20260131.0",
     "@vitest/coverage-v8": "^4.0.18",
