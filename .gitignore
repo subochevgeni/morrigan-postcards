@@ -1,5 +1,5 @@
 coverage/
 .wrangler/
-node_modules/.cache/wrangler/
+node_modules/
 .env
 .env.*

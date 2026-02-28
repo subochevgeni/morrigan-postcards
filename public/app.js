@@ -89,6 +89,9 @@ const STATUS_MESSAGES = {
   exchangeSent: '✅ Exchange offer sent! We will review it and contact you.',
   notFound: '❌ Sorry — this postcard is no longer available.',
   antiSpamFailed: '❌ Anti-spam failed. Please retry.',
+  badName: '❌ Please use a valid name (2-80 chars, no links).',
+  badMessage: '❌ Message looks invalid. Please shorten or simplify it.',
+  rateLimited: '⏱ Too many requests from your network. Please wait a bit and retry.',
   networkError: '❌ Network error. Please try again.',
 };
 
@@ -181,9 +184,15 @@ function handleRequestFailure(status, responseText = '') {
     reqStatus.textContent = STATUS_MESSAGES.notFound;
   } else if (status === 403) {
     reqStatus.textContent = STATUS_MESSAGES.antiSpamFailed;
+  } else if (status === 429) {
+    reqStatus.textContent = STATUS_MESSAGES.rateLimited;
+  } else if (status === 400 && responseText === 'bad name') {
+    reqStatus.textContent = STATUS_MESSAGES.badName;
+  } else if (status === 400 && responseText === 'bad message') {
+    reqStatus.textContent = STATUS_MESSAGES.badMessage;
   } else {
     reqStatus.textContent =
-      '❌ Failed to send. ' + (responseText ? `(${responseText})` : 'Please try again.');
+      '❌ Failed to send. ' + (responseText ? '(' + responseText + ')' : 'Please try again.');
   }
   resetTurnstileLater();
 }

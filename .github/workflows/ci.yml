@@ -21,8 +21,16 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Run npm audit (critical)
+        run: npm audit --audit-level=critical
+
       - name: Run linter
         run: npm run lint
 
       - name: Run tests
         run: npm test --silent
+
+      - name: Run Gitleaks scan
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

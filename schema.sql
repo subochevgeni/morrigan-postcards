@@ -42,11 +42,40 @@ CREATE TABLE IF NOT EXISTS exchange_proposals (
   offered_cards_json TEXT NOT NULL,
   name TEXT NOT NULL,
   message TEXT,
-  created_at INTEGER NOT NULL
+  created_at INTEGER NOT NULL,
+  status TEXT NOT NULL DEFAULT 'new',
+  decided_at INTEGER,
+  decided_by_chat_id TEXT,
+  decision_note TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_exchange_proposals_created_at
   ON exchange_proposals(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_exchange_proposals_status_created_at
+  ON exchange_proposals(status, created_at DESC);
+
+-- Request anti-spam state keyed by anonymized visitor IP fingerprint.
+CREATE TABLE IF NOT EXISTS request_rate_limits (
+  rate_key TEXT PRIMARY KEY,
+  last_request_at INTEGER NOT NULL,
+  window_start_at INTEGER NOT NULL,
+  window_count INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_request_rate_limits_last_request_at
+  ON request_rate_limits(last_request_at);
+
+-- Error alert throttle state to avoid Telegram spam while keeping visibility.
+CREATE TABLE IF NOT EXISTS error_alerts (
+  fingerprint TEXT PRIMARY KEY,
+  first_seen_at INTEGER NOT NULL,
+  last_seen_at INTEGER NOT NULL,
+  last_sent_at INTEGER NOT NULL,
+  total_count INTEGER NOT NULL DEFAULT 1
+);
+
+CREATE INDEX IF NOT EXISTS idx_error_alerts_last_seen_at
+  ON error_alerts(last_seen_at);
 
 -- Short-lived admin actions for Telegram callback buttons (e.g. bulk delete)
 CREATE TABLE IF NOT EXISTS admin_actions (

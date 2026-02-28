@@ -9,7 +9,7 @@ Cloudflare Workers project for postcard exchange:
 
 - Runtime: Cloudflare Workers (`src/worker.js`)
 - Frontend: static HTML/CSS/JS from `public/`
-- Database: Cloudflare D1 (`cards`, `requests`, `exchange_proposals`, `admin_actions`, `admin_events`, `analytics_daily`, `site_access_state`)
+- Database: Cloudflare D1 (`cards`, `requests`, `exchange_proposals`, `admin_actions`, `admin_events`, `analytics_daily`, `site_access_state`, `request_rate_limits`, `error_alerts`)
 - Media storage: Cloudflare R2 bucket (`postcards`)
 - Bot integration: Telegram Bot API webhooks
 - Tests: Vitest (`src/worker.test.js`, `public/app.test.js`)
@@ -19,12 +19,15 @@ Cloudflare Workers project for postcard exchange:
 - Browse postcards with category filter and search by ID
 - Add postcards to cart and send one request for multiple items
 - Optional exchange-offer mode: user can request up to 3 cards and attach up to 3 offered cards
+- Exchange proposal lifecycle in Telegram (`new`, `accepted`, `declined`, `completed`) with inline actions
 - Automatic card reservation (`pending`) after request to prevent race conditions
 - Duplicate request suppression window
+- Request guard with basic input validation and IP-based throttling for `/api/request`
 - Auto-refreshing gallery without full page reload
 - Telegram admin controls:
   - upload new postcards from chat
   - delete single postcard or bulk delete from request message
+  - list exchange proposals via `/exchange [n] [status]`
   - recent admin events and analytics commands
   - view and rotate private access phrase (`/accessword`, `/rotateaccess`)
 
@@ -36,7 +39,7 @@ Cloudflare Workers project for postcard exchange:
 - `public/app.js` - website interaction logic
 - `schema.sql` - full database schema for fresh setup
 - `migrations/` - incremental D1 migrations for existing DB
-- `.github/workflows/ci.yml` - lint + test CI
+- `.github/workflows/ci.yml` - CI: lint + tests + `npm audit` + gitleaks
 
 ## Local Development
 
@@ -102,6 +105,7 @@ Current migrations:
 - `0003_reservations_audit_analytics.sql`
 - `0004_site_access_state.sql`
 - `0005_exchange_proposals.sql`
+- `0006_request_guard_exchange_lifecycle_and_error_alerts.sql`
 
 ## Deploy
 
@@ -120,4 +124,4 @@ npx wrangler deploy
 ## Notes
 
 - End users interact only with the website; Telegram is used internally for admin operations.
-- Scheduled Worker task releases expired reservations and cleans expired admin actions.
+- Scheduled Worker task releases expired reservations, cleans expired admin actions, and prunes old request/error guard rows.

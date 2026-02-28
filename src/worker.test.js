@@ -496,14 +496,21 @@ describe('worker.fetch integration', () => {
             ) {
               return {
                 run: async () => {
-                  insertedExchangeProposals.push({
+                  const proposalId = insertedExchangeProposals.length + 1;
+                  const row = {
+                    proposal_id: proposalId,
                     requested_ids_json: args[0],
                     offered_cards_json: args[1],
                     name: args[2],
                     message: args[3],
                     created_at: args[4],
-                  });
-                  return {};
+                    status: 'new',
+                    decided_at: null,
+                    decided_by_chat_id: null,
+                    decision_note: null,
+                  };
+                  insertedExchangeProposals.push(row);
+                  return { meta: { last_row_id: proposalId } };
                 },
               };
             }
@@ -712,6 +719,158 @@ describe('worker.fetch integration', () => {
             if (sql.includes('SELECT event_name, SUM(cnt) AS total') && sql.includes('FROM analytics_daily')) {
               return {
                 all: async () => ({ results: [] }),
+              };
+            }
+
+
+            if (
+              sql.includes(
+                'SELECT proposal_id FROM exchange_proposals WHERE name=?1 AND created_at=?2 ORDER BY proposal_id DESC LIMIT 1'
+              )
+            ) {
+              const [name, createdAt] = args;
+              return {
+                first: async () => {
+                  const found = [...insertedExchangeProposals]
+                    .filter(
+                      (x) => String(x.name) === String(name) && Number(x.created_at) === Number(createdAt)
+                    )
+                    .sort((a, b) => Number(b.proposal_id || 0) - Number(a.proposal_id || 0))[0];
+                  return found ? { proposal_id: found.proposal_id } : null;
+                },
+              };
+            }
+
+            if (
+              sql.includes(
+                'SELECT proposal_id, requested_ids_json, offered_cards_json, name, message, created_at, status, decided_at, decided_by_chat_id, decision_note FROM exchange_proposals WHERE proposal_id=?1'
+              )
+            ) {
+              const [proposalId] = args;
+              return {
+                first: async () =>
+                  insertedExchangeProposals.find((x) => Number(x.proposal_id) === Number(proposalId)) ||
+                  null,
+              };
+            }
+
+            if (
+              sql.includes(
+                'SELECT proposal_id, requested_ids_json, status FROM exchange_proposals WHERE proposal_id=?1'
+              )
+            ) {
+              const [proposalId] = args;
+              return {
+                first: async () => {
+                  const row = insertedExchangeProposals.find(
+                    (x) => Number(x.proposal_id) === Number(proposalId)
+                  );
+                  if (!row) return null;
+                  return {
+                    proposal_id: row.proposal_id,
+                    requested_ids_json: row.requested_ids_json,
+                    status: row.status,
+                  };
+                },
+              };
+            }
+
+            if (
+              sql.includes(
+                'UPDATE exchange_proposals SET status=?2, decided_at=?3, decided_by_chat_id=?4, decision_note=?5 WHERE proposal_id=?1'
+              )
+            ) {
+              const [proposalId, status, decidedAt, decidedByChatId, decisionNote] = args;
+              return {
+                run: async () => {
+                  const row = insertedExchangeProposals.find(
+                    (x) => Number(x.proposal_id) === Number(proposalId)
+                  );
+                  if (row) {
+                    row.status = status;
+                    row.decided_at = decidedAt;
+                    row.decided_by_chat_id = decidedByChatId;
+                    row.decision_note = decisionNote;
+                  }
+                  return {};
+                },
+              };
+            }
+
+            if (
+              sql.includes(
+                'SELECT proposal_id, requested_ids_json, offered_cards_json, name, message, created_at, status, decided_at, decided_by_chat_id FROM exchange_proposals WHERE status=?1 ORDER BY created_at DESC LIMIT ?2'
+              )
+            ) {
+              const [statusFilter, limit] = args;
+              return {
+                all: async () => ({
+                  results: [...insertedExchangeProposals]
+                    .filter((x) => String(x.status || 'new') === String(statusFilter))
+                    .sort((a, b) => Number(b.created_at) - Number(a.created_at))
+                    .slice(0, Number(limit)),
+                }),
+              };
+            }
+
+            if (
+              sql.includes(
+                'SELECT proposal_id, requested_ids_json, offered_cards_json, name, message, created_at, status, decided_at, decided_by_chat_id FROM exchange_proposals ORDER BY created_at DESC LIMIT ?1'
+              )
+            ) {
+              const [limit] = args;
+              return {
+                all: async () => ({
+                  results: [...insertedExchangeProposals]
+                    .sort((a, b) => Number(b.created_at) - Number(a.created_at))
+                    .slice(0, Number(limit)),
+                }),
+              };
+            }
+
+            if (sql.includes('SELECT last_sent_at, total_count FROM error_alerts WHERE fingerprint=?1')) {
+              return {
+                first: async () => null,
+              };
+            }
+
+            if (
+              sql.includes('INSERT INTO error_alerts (fingerprint, first_seen_at, last_seen_at, last_sent_at, total_count)')
+            ) {
+              return {
+                run: async () => ({}),
+              };
+            }
+
+            if (sql.includes('DELETE FROM error_alerts WHERE last_seen_at<=?1')) {
+              return {
+                run: async () => ({}),
+              };
+            }
+
+            if (
+              sql.includes(
+                'SELECT last_request_at, window_start_at, window_count FROM request_rate_limits WHERE rate_key=?1'
+              )
+            ) {
+              return {
+                first: async () => null,
+              };
+            }
+
+            if (
+              sql.includes(
+                'INSERT INTO request_rate_limits (rate_key, last_request_at, window_start_at, window_count)'
+              )
+            ) {
+              return {
+                run: async () => ({}),
+              };
+            }
+
+            if (sql.includes('DELETE FROM request_rate_limits WHERE last_request_at<=?1')) {
+              return {
+                run: async () => ({}),
               };
             }
 
@@ -1002,7 +1161,8 @@ describe('worker.fetch integration', () => {
       const data = await response.json();
 
       expect(response.status).toBe(200);
-      expect(data).toEqual({ ok: true, exchange: true });
+      expect(data).toMatchObject({ ok: true, exchange: true });
+      expect(typeof data.proposalId).toBe('number');
       expect(insertedRequests).toHaveLength(3);
       expect(insertedExchangeProposals).toHaveLength(1);
       expect(insertedExchangeProposals[0]).toMatchObject({
@@ -1015,10 +1175,15 @@ describe('worker.fetch integration', () => {
       const sendMessageCalls = fetchMock.mock.calls.filter(([url]) =>
         String(url).includes('/sendMessage')
       );
-      expect(sendMessageCalls).toHaveLength(2);
-      const sendPayload = JSON.parse(sendMessageCalls[0][1].body);
-      expect(sendPayload.text).toContain('WEBSITE EXCHANGE OFFER');
-      expect(sendPayload.text).toContain('Offered by user (3)');
+      expect(sendMessageCalls.length).toBeGreaterThanOrEqual(2);
+
+      const sendPayloads = sendMessageCalls.map(([, init]) => JSON.parse(init.body));
+      const exchangePayload = sendPayloads.find((payload) =>
+        String(payload?.text || '').includes('WEBSITE EXCHANGE OFFER')
+      );
+
+      expect(exchangePayload).toBeTruthy();
+      expect(exchangePayload.text).toContain('Offered by user (3)');
     } finally {
       global.fetch = prevFetch;
     }

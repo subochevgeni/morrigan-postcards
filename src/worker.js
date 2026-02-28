@@ -27,6 +27,18 @@ const ACCESS_STATE_PRIMARY_KEY = 'primary';
 const ACCESS_PHRASE_MIN_LEN = 6;
 const ACCESS_PHRASE_MAX_LEN = 80;
 const ACCESS_PHRASE_RE = /^[a-z0-9][a-z0-9._:-]*$/i;
+const REQUESTER_NAME_MIN_LEN = 2;
+const REQUESTER_NAME_MAX_LEN = 80;
+const REQUESTER_NAME_RE = /^[\p{L}\p{N}][\p{L}\p{N}\s'._-]*$/u;
+const REQUESTER_MESSAGE_MAX_LEN = 600;
+const REQUEST_IP_COOLDOWN_MS = 1000 * 20;
+const REQUEST_IP_WINDOW_MS = 1000 * 60 * 10;
+const REQUEST_IP_WINDOW_MAX = 12;
+const REQUEST_RATE_STATE_TTL_MS = 1000 * 60 * 60 * 24 * 14;
+const ERROR_ALERT_THROTTLE_MS = 1000 * 60 * 5;
+const ERROR_ALERT_STATE_TTL_MS = 1000 * 60 * 60 * 24 * 30;
+const EXCHANGE_STATUS_VALUES = ['new', 'accepted', 'declined', 'completed'];
+const LOCAL_ERROR_ALERT_STATE = new Map();
 
 function base64UrlFromArrayBuffer(buf) {
   const bytes = new Uint8Array(buf);
@@ -574,9 +586,10 @@ function adminKeyboard() {
     keyboard: [
       [{ text: '📊 Stats' }, { text: '🆕 Last' }],
       [{ text: '🗂️ List 20' }, { text: '🕘 Recent' }],
-      [{ text: '📈 Analytics' }, { text: '🆔 My ID' }],
-      [{ text: '🔌 Webhook' }, { text: '🔐 Access Word' }],
-      [{ text: '🗑 Delete by ID' }, { text: '❓ Help' }],
+      [{ text: '📈 Analytics' }, { text: '🔁 Exchanges' }],
+      [{ text: '🆔 My ID' }, { text: '🔌 Webhook' }],
+      [{ text: '🔐 Access Word' }, { text: '🗑 Delete by ID' }],
+      [{ text: '❓ Help' }],
     ],
     resize_keyboard: true,
   };
@@ -588,7 +601,8 @@ function adminHelpText() {
     '📌 Admin panel\n' +
     '• Send postcard as Photo to add it\n' +
     '• Optional category in caption: ' + catList + '\n' +
-    '• For website requests, use 🗑 buttons under request message (single or Delete all)\n\n' +
+    '• For website requests, use 🗑 buttons under request message (single or Delete all)\n' +
+    '• For exchange offers, use 🔁 buttons (Accept/Decline/Complete) under proposal message\n\n' +
     'Commands:\n' +
     '/help — this menu\n' +
     '/myid — show chat_id\n' +
@@ -597,6 +611,7 @@ function adminHelpText() {
     '/list [n] — last n IDs (1..200)\n' +
     '/recent [n] — recent admin events\n' +
     '/analytics [days] — aggregated counters\n' +
+    '/exchange [n] [status] — recent exchange proposals (status: new/accepted/declined/completed)\n' +
     '/accessword — show current/previous secret phrase\n' +
     '/rotateaccess [new_phrase] — rotate phrase (auto-generate if omitted)\n' +
     '/webhookinfo — Telegram webhook diagnostics\n' +
@@ -612,6 +627,7 @@ function normalizeAdminText(text) {
   if (t === '🗂️ List 20') return '/list 20';
   if (t === '🕘 Recent') return '/recent 15';
   if (t === '📈 Analytics') return '/analytics 7';
+  if (t === '🔁 Exchanges') return '/exchange 10';
   if (t === '🆔 My ID') return '/myid';
   if (t === '🔌 Webhook') return '/webhookinfo';
   if (t === '🔐 Access Word') return '/accessword';
@@ -765,8 +781,297 @@ function summarizeBulkDelete(results) {
 }
 
 function callbackNoticeText(prefix, callback) {
-  const user = callback?.from?.username ? `@${callback.from.username}` : '(no username)';
-  return `${prefix} by ${user}`;
+  const user = callback?.from?.username ? '@' + callback.from.username : '(no username)';
+  return prefix + ' by ' + user;
+}
+
+function normalizeExchangeStatus(rawStatus) {
+  const s = String(rawStatus || '')
+    .trim()
+    .toLowerCase();
+  return EXCHANGE_STATUS_VALUES.includes(s) ? s : '';
+}
+
+function formatExchangeStatusLabel(status) {
+  const s = normalizeExchangeStatus(status) || 'new';
+  if (s === 'accepted') return 'accepted';
+  if (s === 'declined') return 'declined';
+  if (s === 'completed') return 'completed';
+  return 'new';
+}
+
+function canTransitionExchangeStatus(currentStatus, nextStatus) {
+  const from = normalizeExchangeStatus(currentStatus) || 'new';
+  const to = normalizeExchangeStatus(nextStatus);
+  if (!to) return false;
+  if (from === to) return true;
+  if (from === 'new') return to === 'accepted' || to === 'declined';
+  if (from === 'accepted') return to === 'completed' || to === 'declined';
+  if (from === 'declined') return to === 'accepted';
+  if (from === 'completed') return false;
+  return false;
+}
+
+function buildExchangeStatusInlineKeyboard(proposalId, status = 'new') {
+  const id = Number(proposalId);
+  if (!Number.isFinite(id) || id <= 0) return null;
+  const current = normalizeExchangeStatus(status) || 'new';
+
+  if (current === 'completed') {
+    return {
+      inline_keyboard: [[{ text: '✅ Completed', callback_data: 'noop:exchange:' + id }]],
+    };
+  }
+
+  if (current === 'declined') {
+    return {
+      inline_keyboard: [
+        [{ text: '✅ Accept', callback_data: 'exst:' + id + ':accepted' }],
+        [{ text: '❌ Declined', callback_data: 'noop:exchange:' + id }],
+      ],
+    };
+  }
+
+  if (current === 'accepted') {
+    return {
+      inline_keyboard: [
+        [
+          { text: '✅ Accepted', callback_data: 'noop:exchange:' + id },
+          { text: '🏁 Complete', callback_data: 'exst:' + id + ':completed' },
+        ],
+        [{ text: '❌ Decline', callback_data: 'exst:' + id + ':declined' }],
+      ],
+    };
+  }
+
+  return {
+    inline_keyboard: [[
+      { text: '✅ Accept', callback_data: 'exst:' + id + ':accepted' },
+      { text: '❌ Decline', callback_data: 'exst:' + id + ':declined' },
+    ]],
+  };
+}
+
+function parseJsonArraySafe(raw) {
+  try {
+    const parsed = JSON.parse(String(raw || '[]'));
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function normalizeRequesterName(raw) {
+  const value = String(raw || '')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  if (value.length < REQUESTER_NAME_MIN_LEN || value.length > REQUESTER_NAME_MAX_LEN) {
+    return { ok: false, error: 'bad name' };
+  }
+  if (!REQUESTER_NAME_RE.test(value)) return { ok: false, error: 'bad name' };
+  if (/https?:\/\//i.test(value) || /www\./i.test(value)) return { ok: false, error: 'bad name' };
+  if (/(.)\1{5,}/u.test(value)) return { ok: false, error: 'bad name' };
+
+  return { ok: true, value };
+}
+
+function normalizeRequesterMessage(raw) {
+  const value = String(raw || '').trim();
+  if (!value) return { ok: true, value: '' };
+  if (value.length > REQUESTER_MESSAGE_MAX_LEN) return { ok: false, error: 'bad message' };
+  const urlMatches = value.match(/https?:\/\//gi) || [];
+  if (urlMatches.length > 2) return { ok: false, error: 'bad message' };
+  return { ok: true, value };
+}
+
+function getRequestClientIp(request) {
+  const cfIp = String(request.headers.get('CF-Connecting-IP') || '').trim();
+  if (cfIp) return cfIp;
+
+  const forwarded = String(request.headers.get('X-Forwarded-For') || '').trim();
+  if (!forwarded) return '';
+  const first = forwarded.split(',')[0] || '';
+  return String(first).trim();
+}
+
+async function shortHash(input, len = 24) {
+  const enc = new TextEncoder();
+  const digest = await crypto.subtle.digest('SHA-256', enc.encode(String(input || '')));
+  return base64UrlFromArrayBuffer(digest).slice(0, len);
+}
+
+async function buildRequestRateKey(request) {
+  const ip = getRequestClientIp(request);
+  if (!ip) return '';
+  return 'ip:' + (await shortHash(ip, 26));
+}
+
+function buildRateLimitResponse(limitResult) {
+  const retryAfterSec = Math.max(1, Math.ceil(Number(limitResult?.retryAfterMs || 1000) / 1000));
+  return new Response('rate limited', {
+    status: 429,
+    headers: {
+      'retry-after': String(retryAfterSec),
+      'content-type': 'text/plain; charset=utf-8',
+    },
+  });
+}
+
+async function enforceRequestRateLimit(env, request, now = Date.now()) {
+  const rateKey = await buildRequestRateKey(request);
+  if (!rateKey) return { ok: true, skipped: true };
+
+  try {
+    const existing = await env.DB.prepare(
+      'SELECT last_request_at, window_start_at, window_count FROM request_rate_limits WHERE rate_key=?1'
+    )
+      .bind(rateKey)
+      .first();
+
+    if (!existing) {
+      await env.DB.prepare(
+        'INSERT INTO request_rate_limits (rate_key, last_request_at, window_start_at, window_count) VALUES (?1, ?2, ?3, ?4)'
+      )
+        .bind(rateKey, now, now, 1)
+        .run();
+      return { ok: true };
+    }
+
+    const lastRequestAt = Number(existing.last_request_at || 0);
+    const cooldownLeft = REQUEST_IP_COOLDOWN_MS - (now - lastRequestAt);
+    if (cooldownLeft > 0) {
+      return { ok: false, reason: 'cooldown', retryAfterMs: cooldownLeft };
+    }
+
+    let windowStartAt = Number(existing.window_start_at || now);
+    let windowCount = Number(existing.window_count || 0);
+    if (now - windowStartAt > REQUEST_IP_WINDOW_MS) {
+      windowStartAt = now;
+      windowCount = 0;
+    }
+
+    if (windowCount >= REQUEST_IP_WINDOW_MAX) {
+      const retryAfterMs = Math.max(1000, REQUEST_IP_WINDOW_MS - (now - windowStartAt));
+      return { ok: false, reason: 'burst', retryAfterMs };
+    }
+
+    await env.DB.prepare(
+      'INSERT INTO request_rate_limits (rate_key, last_request_at, window_start_at, window_count) VALUES (?1, ?2, ?3, ?4) ON CONFLICT(rate_key) DO UPDATE SET last_request_at=excluded.last_request_at, window_start_at=excluded.window_start_at, window_count=excluded.window_count'
+    )
+      .bind(rateKey, now, windowStartAt, windowCount + 1)
+      .run();
+
+    return { ok: true };
+  } catch (e) {
+    if (isMissingTableError(e, 'request_rate_limits')) return { ok: true, missingTable: true };
+    throw e;
+  }
+}
+
+async function cleanupRequestRateLimits(env, cutoffTs) {
+  try {
+    await env.DB.prepare('DELETE FROM request_rate_limits WHERE last_request_at<=?1')
+      .bind(cutoffTs)
+      .run();
+  } catch (e) {
+    if (isMissingTableError(e, 'request_rate_limits')) return;
+    throw e;
+  }
+}
+
+async function cleanupErrorAlerts(env, cutoffTs) {
+  try {
+    await env.DB.prepare('DELETE FROM error_alerts WHERE last_seen_at<=?1').bind(cutoffTs).run();
+  } catch (e) {
+    if (isMissingTableError(e, 'error_alerts')) return;
+    throw e;
+  }
+}
+
+function compactErrorMessage(err) {
+  const raw = String(err?.stack || err?.message || err || 'unknown error').trim();
+  return raw.replace(/\n+/g, ' | ').slice(0, 900);
+}
+
+function formatErrorAlertMessage({ scope, fingerprint, errorMessage, meta, nowIso }) {
+  const lines = [
+    '🚨 Worker runtime error',
+    'Scope: ' + scope,
+    'Time: ' + nowIso,
+    'Fingerprint: ' + fingerprint,
+    'Error: ' + errorMessage,
+  ];
+
+  if (meta && Object.keys(meta).length) {
+    let metaText = '';
+    try {
+      metaText = JSON.stringify(meta);
+    } catch {
+      metaText = String(meta);
+    }
+    if (metaText) lines.push('Meta: ' + metaText.slice(0, 1200));
+  }
+
+  return lines.join('\n').slice(0, 3900);
+}
+
+async function reportRuntimeError(env, scope, err, meta = {}) {
+  const scopeSafe = String(scope || 'runtime').trim().slice(0, 80) || 'runtime';
+  const errorMessage = compactErrorMessage(err);
+  console.log('runtime error', scopeSafe, err);
+
+  const admins = getAdminList(env);
+  if (!admins.length || !String(env.TG_BOT_TOKEN || '').trim()) return;
+
+  const now = Date.now();
+  const fingerprint = await shortHash(scopeSafe + '|' + errorMessage.slice(0, 300), 28);
+  let shouldSend = true;
+
+  try {
+    const existing = await env.DB.prepare(
+      'SELECT last_sent_at, total_count FROM error_alerts WHERE fingerprint=?1'
+    )
+      .bind(fingerprint)
+      .first();
+
+    const lastSentAt = Number(existing?.last_sent_at || 0);
+    const sinceLast = now - lastSentAt;
+    shouldSend = !lastSentAt || sinceLast >= ERROR_ALERT_THROTTLE_MS;
+
+    await env.DB.prepare(
+      'INSERT INTO error_alerts (fingerprint, first_seen_at, last_seen_at, last_sent_at, total_count) VALUES (?1, ?2, ?3, ?4, 1) ON CONFLICT(fingerprint) DO UPDATE SET last_seen_at=excluded.last_seen_at, last_sent_at=CASE WHEN ?5 THEN excluded.last_sent_at ELSE error_alerts.last_sent_at END, total_count=error_alerts.total_count + 1'
+    )
+      .bind(fingerprint, now, now, now, shouldSend ? 1 : 0)
+      .run();
+  } catch (dbErr) {
+    if (!isMissingTableError(dbErr, 'error_alerts')) {
+      console.log('error alert state update failed', dbErr);
+      return;
+    }
+
+    const prev = Number(LOCAL_ERROR_ALERT_STATE.get(fingerprint) || 0);
+    shouldSend = !prev || now - prev >= ERROR_ALERT_THROTTLE_MS;
+    if (shouldSend) LOCAL_ERROR_ALERT_STATE.set(fingerprint, now);
+  }
+
+  if (!shouldSend) return;
+
+  const msg = formatErrorAlertMessage({
+    scope: scopeSafe,
+    fingerprint,
+    errorMessage,
+    meta,
+    nowIso: new Date(now).toISOString(),
+  });
+
+  for (const adminId of admins) {
+    try {
+      await tgSend(env, adminId, msg);
+    } catch (sendErr) {
+      console.log('error alert telegram send failed', sendErr);
+    }
+  }
 }
 
 function toUtcDateKey(ts = Date.now()) {
@@ -973,11 +1278,161 @@ async function dbList(env, limit) {
 async function dbInsertExchangeProposal(env, { postcardIds, offeredCards, name, message, createdAt }) {
   const idsJson = JSON.stringify(cleanPostcardIds(postcardIds, MAX_CART_IDS));
   const offersJson = JSON.stringify(offeredCards);
-  await env.DB.prepare(
+  const res = await env.DB.prepare(
     'INSERT INTO exchange_proposals (requested_ids_json, offered_cards_json, name, message, created_at) VALUES (?1, ?2, ?3, ?4, ?5)'
   )
     .bind(idsJson, offersJson, name, message || null, createdAt)
     .run();
+
+  const proposalId =
+    Number(res?.meta?.last_row_id || 0) ||
+    Number(res?.meta?.last_row_id_str || 0) ||
+    Number(res?.results?.[0]?.last_row_id || 0) ||
+    null;
+
+  if (proposalId) return proposalId;
+
+  const fallbackRow = await env.DB.prepare(
+    'SELECT proposal_id FROM exchange_proposals WHERE name=?1 AND created_at=?2 ORDER BY proposal_id DESC LIMIT 1'
+  )
+    .bind(name, createdAt)
+    .first();
+  return Number(fallbackRow?.proposal_id || 0) || null;
+}
+
+async function dbGetExchangeProposal(env, proposalId) {
+  try {
+    const row = await env.DB.prepare(
+      'SELECT proposal_id, requested_ids_json, offered_cards_json, name, message, created_at, status, decided_at, decided_by_chat_id, decision_note FROM exchange_proposals WHERE proposal_id=?1'
+    )
+      .bind(proposalId)
+      .first();
+    return row || null;
+  } catch (e) {
+    if (isMissingTableError(e, 'exchange_proposals')) return null;
+    throw e;
+  }
+}
+
+async function dbUpdateExchangeProposalStatus(
+  env,
+  { proposalId, nextStatus, adminChatId = '', decisionNote = null, now = Date.now() }
+) {
+  const target = normalizeExchangeStatus(nextStatus);
+  if (!target) return { ok: false, badStatus: true };
+
+  let proposal;
+  try {
+    proposal = await env.DB.prepare(
+      'SELECT proposal_id, requested_ids_json, status FROM exchange_proposals WHERE proposal_id=?1'
+    )
+      .bind(proposalId)
+      .first();
+  } catch (e) {
+    if (isMissingTableError(e, 'exchange_proposals')) return { ok: false, missingTable: true };
+    throw e;
+  }
+
+  if (!proposal) return { ok: false, notFound: true };
+
+  const currentStatus = normalizeExchangeStatus(proposal.status) || 'new';
+  if (!canTransitionExchangeStatus(currentStatus, target)) {
+    return {
+      ok: false,
+      badTransition: true,
+      currentStatus,
+      nextStatus: target,
+    };
+  }
+
+  try {
+    await env.DB.prepare(
+      'UPDATE exchange_proposals SET status=?2, decided_at=?3, decided_by_chat_id=?4, decision_note=?5 WHERE proposal_id=?1'
+    )
+      .bind(proposalId, target, now, String(adminChatId || ''), decisionNote)
+      .run();
+  } catch (e) {
+    if (isMissingTableError(e, 'exchange_proposals')) return { ok: false, missingTable: true };
+    throw e;
+  }
+
+  return {
+    ok: true,
+    proposalId: Number(proposalId),
+    currentStatus,
+    nextStatus: target,
+    requestedIds: cleanPostcardIds(parseJsonArraySafe(proposal.requested_ids_json), 20),
+  };
+}
+
+async function dbListExchangeProposals(env, limit = 10, status = '') {
+  const safeLimit = Math.min(Math.max(Number(limit) || 10, 1), 30);
+  const statusFilter = normalizeExchangeStatus(status);
+  try {
+    const stmt = statusFilter
+      ? env.DB
+          .prepare(
+            'SELECT proposal_id, requested_ids_json, offered_cards_json, name, message, created_at, status, decided_at, decided_by_chat_id FROM exchange_proposals WHERE status=?1 ORDER BY created_at DESC LIMIT ?2'
+          )
+          .bind(statusFilter, safeLimit)
+      : env.DB
+          .prepare(
+            'SELECT proposal_id, requested_ids_json, offered_cards_json, name, message, created_at, status, decided_at, decided_by_chat_id FROM exchange_proposals ORDER BY created_at DESC LIMIT ?1'
+          )
+          .bind(safeLimit);
+    const { results } = await stmt.all();
+    return { ok: true, rows: results || [] };
+  } catch (e) {
+    if (isMissingTableError(e, 'exchange_proposals')) return { ok: false, missingTable: true, rows: [] };
+    throw e;
+  }
+}
+
+function formatExchangeProposalsList(rows, statusFilter = '') {
+  if (!rows.length) {
+    return '🔁 Exchange proposals' + (statusFilter ? ' (' + statusFilter + ')' : '') + '\nNo data.';
+  }
+
+  const lines = [
+    '🔁 Exchange proposals' + (statusFilter ? ' (' + statusFilter + ')' : '') + ' · ' + rows.length,
+  ];
+
+  for (const row of rows) {
+    const ids = cleanPostcardIds(parseJsonArraySafe(row.requested_ids_json), 20);
+    const offers = parseJsonArraySafe(row.offered_cards_json)
+      .map((x) => String(x || '').trim())
+      .filter(Boolean)
+      .slice(0, 3);
+    lines.push(
+      REQUEST_VISUAL_DIVIDER +
+        '\n#' + Number(row.proposal_id || 0) +
+        ' · ' + formatExchangeStatusLabel(row.status) +
+        '\nRequested: ' + (ids.length ? ids.join(', ') : '—') +
+        '\nOffered: ' + (offers.length ? offers.join(' | ') : '—') +
+        '\nName: ' + String(row.name || '—') +
+        '\nCreated: ' + formatRequestTimestamp(row.created_at) +
+        (row.decided_at ? '\nDecided: ' + formatRequestTimestamp(row.decided_at) : '') +
+        (row.decided_by_chat_id ? '\nBy chat_id: ' + row.decided_by_chat_id : '')
+    );
+  }
+
+  return lines.join('\n');
+}
+
+async function notifyAdminsWithExchangeActions(env, proposalId, status = 'new') {
+  const keyboard = buildExchangeStatusInlineKeyboard(proposalId, status);
+  if (!keyboard) return;
+
+  const textOut =
+    '🔁 Exchange proposal #' +
+    proposalId +
+    '\nStatus: ' +
+    formatExchangeStatusLabel(status) +
+    '\nUse buttons below to update lifecycle.';
+
+  for (const adminId of getAdminList(env)) {
+    await tgSend(env, adminId, textOut, keyboard);
+  }
 }
 
 function getSiteUrl(env) {
@@ -1011,27 +1466,39 @@ function buildAdminRequestText({ postcardIds, name, message, siteUrl, createdAt 
   );
 }
 
-function buildAdminExchangeOfferText({ postcardIds, offeredCards, name, message, siteUrl, createdAt }) {
+function buildAdminExchangeOfferText({
+  proposalId = null,
+  status = 'new',
+  postcardIds,
+  offeredCards,
+  name,
+  message,
+  siteUrl,
+  createdAt,
+}) {
   const ids = cleanPostcardIds(Array.isArray(postcardIds) ? postcardIds : [postcardIds], 20);
   const offers = Array.isArray(offeredCards) ? offeredCards : [];
   const isMulti = ids.length > 1;
   const idsBlock = isMulti
-    ? `📮 Requested IDs (${ids.length}):\n${ids.map((id) => `• ${id}`).join('\n')}`
-    : `📮 Requested ID: ${ids[0] || '—'}`;
+    ? '📮 Requested IDs (' + ids.length + '):\n' + ids.map((id) => '• ' + id).join('\n')
+    : '📮 Requested ID: ' + (ids[0] || '—');
   const offersBlock = offers.length
-    ? `🎁 Offered by user (${offers.length}):\n${offers.map((x) => `• ${x}`).join('\n')}`
+    ? '🎁 Offered by user (' + offers.length + '):\n' + offers.map((x) => '• ' + x).join('\n')
     : '🎁 Offered by user: —';
-  const siteLink = isMulti ? siteUrl : `${siteUrl}/#${ids[0] || ''}`;
+  const siteLink = isMulti ? siteUrl : siteUrl + '/#' + (ids[0] || '');
+  const statusLabel = formatExchangeStatusLabel(status);
 
   return (
-    `🔁 WEBSITE EXCHANGE OFFER${isMulti ? ' · MULTI' : ''}\n` +
-    `${REQUEST_VISUAL_DIVIDER}\n` +
-    `${idsBlock}\n` +
-    `${offersBlock}\n` +
-    `👤 Name: ${name}\n` +
-    `💬 Message: ${message || '—'}\n` +
-    `🕒 ${formatRequestTimestamp(createdAt)}\n` +
-    `🌐 ${siteLink}`
+    '🔁 WEBSITE EXCHANGE OFFER' + (isMulti ? ' · MULTI' : '') + '\n' +
+    REQUEST_VISUAL_DIVIDER + '\n' +
+    '🧾 Proposal ID: ' + (proposalId || '—') + '\n' +
+    '📌 Status: ' + statusLabel + '\n' +
+    idsBlock + '\n' +
+    offersBlock + '\n' +
+    '👤 Name: ' + name + '\n' +
+    '💬 Message: ' + (message || '—') + '\n' +
+    '🕒 ' + formatRequestTimestamp(createdAt) + '\n' +
+    '🌐 ' + siteLink
   );
 }
 
@@ -1150,52 +1617,62 @@ async function verifyTurnstile(request, env, token) {
 
 async function handleWebRequest(request, env) {
   if (request.method !== 'POST') return text('method not allowed', 405);
-  await releaseExpiredReservations(env);
 
-  let body;
   try {
-    body = await request.json();
-  } catch {
-    return text('bad json', 400);
-  }
+    await releaseExpiredReservations(env);
 
-  // Honeypot
-  if (String(body?.website || '').trim()) return json({ ok: true });
+    let body;
+    try {
+      body = await request.json();
+    } catch {
+      return text('bad json', 400);
+    }
 
-  const name = String(body?.name || '')
-    .trim()
-    .slice(0, 80);
-  const message = String(body?.message || '')
-    .trim()
-    .slice(0, 600);
-  const token = String(body?.turnstileToken || '').trim();
-  const exchangeMode = Boolean(body?.exchangeOffer) || Array.isArray(body?.offeredCards);
-  const offeredCards = normalizeOfferedCards(body?.offeredCards, MAX_EXCHANGE_OFFER_CARDS);
+    // Honeypot
+    if (String(body?.website || '').trim()) return json({ ok: true });
 
-  if (!name) return text('name required', 400);
-  if (!token) return text('turnstile required', 403);
-  if (exchangeMode && offeredCards.total === 0) return text('offered cards required', 400);
-  if (exchangeMode && offeredCards.total > MAX_EXCHANGE_OFFER_CARDS) {
-    return text('too many offered cards', 400);
-  }
+    const parsedName = normalizeRequesterName(body?.name);
+    if (!parsedName.ok) return text(parsedName.error, 400);
+    const name = parsedName.value;
 
-  const ts = await verifyTurnstile(request, env, token);
-  if (!ts.ok) return text('turnstile failed', 403);
+    const parsedMessage = normalizeRequesterMessage(body?.message);
+    if (!parsedMessage.ok) return text(parsedMessage.error, 400);
+    const message = parsedMessage.value;
 
-  const siteUrl = getSiteUrl(env);
-  const idsParam = body?.ids;
-  const singleId = body?.id;
+    const token = String(body?.turnstileToken || '').trim();
+    const exchangeMode = Boolean(body?.exchangeOffer) || Array.isArray(body?.offeredCards);
+    const offeredCards = normalizeOfferedCards(body?.offeredCards, MAX_EXCHANGE_OFFER_CARDS);
 
-  if (Array.isArray(idsParam) && idsParam.length > 0) {
-    const postcardIds = idsParam
-      .map((x) => String(x || '').trim().toLowerCase())
-      .filter((x) => /^[0-9a-z]{4,12}$/i.test(x))
-      .slice(0, MAX_CART_IDS);
+    if (!token) return text('turnstile required', 403);
+    if (exchangeMode && offeredCards.total === 0) return text('offered cards required', 400);
+    if (exchangeMode && offeredCards.total > MAX_EXCHANGE_OFFER_CARDS) {
+      return text('too many offered cards', 400);
+    }
+
+    const ts = await verifyTurnstile(request, env, token);
+    if (!ts.ok) return text('turnstile failed', 403);
+
+    const idsParam = body?.ids;
+    const isCart = Array.isArray(idsParam) && idsParam.length > 0;
+    const postcardIds = isCart
+      ? idsParam
+          .map((x) => String(x || '').trim().toLowerCase())
+          .filter((x) => /^[0-9a-z]{4,12}$/i.test(x))
+          .slice(0, MAX_CART_IDS)
+      : cleanPostcardIds([String(body?.id || '').trim().toLowerCase()], 1);
+
     if (postcardIds.length === 0) return text('bad id', 400);
     if (exchangeMode && postcardIds.length > MAX_EXCHANGE_REQUEST_IDS) {
       return text('too many requested cards', 400);
     }
+
     const now = Date.now();
+    const rateCheck = await enforceRequestRateLimit(env, request, now);
+    if (!rateCheck.ok) {
+      await trackAnalytics(env, 'request_rate_limited', 1, now);
+      return buildRateLimitResponse(rateCheck);
+    }
+
     if (await isDuplicateRequest(env, name, postcardIds, now)) {
       await trackAnalytics(env, 'request_deduped');
       return json({ ok: true, deduped: true });
@@ -1216,16 +1693,19 @@ async function handleWebRequest(request, env) {
         .run();
     }
 
-    let requestText = buildAdminRequestText({
+    const siteUrl = getSiteUrl(env);
+    let proposalId = null;
+    let adminText = buildAdminRequestText({
       postcardIds,
       name,
       message,
       siteUrl,
       createdAt: now,
     });
+
     if (exchangeMode) {
       try {
-        await dbInsertExchangeProposal(env, {
+        proposalId = await dbInsertExchangeProposal(env, {
           postcardIds,
           offeredCards: offeredCards.cards,
           name,
@@ -1236,7 +1716,10 @@ async function handleWebRequest(request, env) {
         if (isMissingTableError(e, 'exchange_proposals')) return text('exchange unavailable', 503);
         throw e;
       }
-      requestText = buildAdminExchangeOfferText({
+
+      adminText = buildAdminExchangeOfferText({
+        proposalId,
+        status: 'new',
         postcardIds,
         offeredCards: offeredCards.cards,
         name,
@@ -1249,67 +1732,26 @@ async function handleWebRequest(request, env) {
 
     await reserveCards(env, postcardIds, now);
     await trackAnalytics(env, 'request_sent', postcardIds.length, now);
-    await notifyAdminsWithRequestCards(env, postcardIds, requestText);
-    return json(exchangeMode ? { ok: true, exchange: true } : { ok: true });
-  }
 
-  const postcardId = String(singleId || '').trim().toLowerCase();
-  if (!/^[0-9a-z]{4,12}$/i.test(postcardId)) return text('bad id', 400);
-  const now = Date.now();
-  if (await isDuplicateRequest(env, name, [postcardId], now)) {
-    await trackAnalytics(env, 'request_deduped');
-    return json({ ok: true, deduped: true });
-  }
-
-  const card = await env.DB.prepare("SELECT id FROM cards WHERE id=?1 AND status='available'")
-    .bind(postcardId)
-    .first();
-
-  if (!card) return text('not found', 404);
-
-  await env.DB.prepare(
-    'INSERT INTO requests (postcard_id, name, message, created_at) VALUES (?1, ?2, ?3, ?4)'
-  )
-    .bind(postcardId, name, message || null, now)
-    .run();
-
-  const requestText = buildAdminRequestText({
-    postcardIds: [postcardId],
-    name,
-    message,
-    siteUrl,
-    createdAt: now,
-  });
-  let adminText = requestText;
-  if (exchangeMode) {
-    try {
-      await dbInsertExchangeProposal(env, {
-        postcardIds: [postcardId],
-        offeredCards: offeredCards.cards,
-        name,
-        message,
-        createdAt: now,
-      });
-    } catch (e) {
-      if (isMissingTableError(e, 'exchange_proposals')) return text('exchange unavailable', 503);
-      throw e;
+    if (postcardIds.length > 1) {
+      await notifyAdminsWithRequestCards(env, postcardIds, adminText);
+    } else {
+      await notifyAdminsWithRequestCard(env, postcardIds[0], adminText);
     }
-    adminText = buildAdminExchangeOfferText({
-      postcardIds: [postcardId],
-      offeredCards: offeredCards.cards,
-      name,
-      message,
-      siteUrl,
-      createdAt: now,
+
+    if (exchangeMode && proposalId) {
+      await notifyAdminsWithExchangeActions(env, proposalId, 'new');
+    }
+
+    return json(exchangeMode ? { ok: true, exchange: true, proposalId } : { ok: true });
+  } catch (e) {
+    await reportRuntimeError(env, 'api_request', e, {
+      path: '/api/request',
+      method: request.method,
+      ip: getRequestClientIp(request),
     });
-    await trackAnalytics(env, 'exchange_offer_sent', 1, now);
+    return text('internal error', 500);
   }
-
-  await reserveCards(env, [postcardId], now);
-  await trackAnalytics(env, 'request_sent', 1, now);
-  await notifyAdminsWithRequestCard(env, postcardId, adminText);
-
-  return json(exchangeMode ? { ok: true, exchange: true } : { ok: true });
 }
 
 async function handleTelegram(request, env) {
@@ -1349,8 +1791,19 @@ async function handleTelegram(request, env) {
     const data = String(callback.data || '');
     const singleMatch = data.match(/^del:([0-9a-z]{4,12})$/i);
     const bulkMatch = data.match(/^delall:([0-9a-z]{6,16})$/i);
+    const exchangeMatch = data.match(/^exst:(\d+):(new|accepted|declined|completed)$/i);
+    const noopExchangeMatch = data.match(/^noop:exchange:(\d+)$/i);
 
-    if (!singleMatch && !bulkMatch) {
+    if (noopExchangeMatch) {
+      await tgApi(env, 'answerCallbackQuery', {
+        callback_query_id: callback.id,
+        text: 'Already up to date',
+        show_alert: false,
+      });
+      return json({ ok: true });
+    }
+
+    if (!singleMatch && !bulkMatch && !exchangeMatch) {
       await tgApi(env, 'answerCallbackQuery', {
         callback_query_id: callback.id,
         text: 'Unknown action',
@@ -1359,10 +1812,9 @@ async function handleTelegram(request, env) {
       return json({ ok: true });
     }
 
-    // Acknowledge immediately to stop Telegram loading spinner.
     await tgApi(env, 'answerCallbackQuery', {
       callback_query_id: callback.id,
-      text: 'Processing delete...',
+      text: exchangeMatch ? 'Processing exchange status...' : 'Processing delete...',
       show_alert: false,
     });
 
@@ -1374,8 +1826,8 @@ async function handleTelegram(request, env) {
           details: { via: 'callback_single' },
         });
         const msg = result.deleted
-          ? callbackNoticeText(`🗑️ Removed from gallery: ${id}`, callback)
-          : callbackNoticeText(`⚠️ Could not remove ${id}: already missing.`, callback);
+          ? callbackNoticeText('🗑️ Removed from gallery: ' + id, callback)
+          : callbackNoticeText('⚠️ Could not remove ' + id + ': already missing.', callback);
         await tgSend(env, chatId, msg);
         return json({ ok: true });
       }
@@ -1428,12 +1880,95 @@ async function handleTelegram(request, env) {
         await tgSend(env, chatId, callbackNoticeText(summarizeBulkDelete(results), callback));
         return json({ ok: true });
       }
+
+      if (exchangeMatch) {
+        const proposalId = Number(exchangeMatch[1]);
+        const nextStatus = normalizeExchangeStatus(exchangeMatch[2]);
+
+        const updateResult = await dbUpdateExchangeProposalStatus(env, {
+          proposalId,
+          nextStatus,
+          adminChatId: chatId,
+          decisionNote: callback?.from?.username
+            ? 'callback by @' + callback.from.username
+            : 'callback by chat_id ' + chatId,
+        });
+
+        if (!updateResult.ok && updateResult.missingTable) {
+          await tgSend(
+            env,
+            chatId,
+            'Exchange lifecycle storage is not initialized. Apply D1 migration 0006_request_guard_exchange_lifecycle_and_error_alerts.sql and retry.'
+          );
+          return json({ ok: true });
+        }
+
+        if (!updateResult.ok && updateResult.notFound) {
+          await tgSend(env, chatId, callbackNoticeText('⚠️ Exchange proposal not found.', callback));
+          return json({ ok: true });
+        }
+
+        if (!updateResult.ok && updateResult.badTransition) {
+          await tgSend(
+            env,
+            chatId,
+            callbackNoticeText(
+              '⚠️ Invalid status change: ' +
+                formatExchangeStatusLabel(updateResult.currentStatus) +
+                ' → ' +
+                formatExchangeStatusLabel(updateResult.nextStatus),
+              callback
+            )
+          );
+          return json({ ok: true });
+        }
+
+        await addAdminEvent(env, {
+          action: 'exchange_status',
+          ids: updateResult.requestedIds || [],
+          adminChatId: chatId,
+          details: {
+            proposal_id: proposalId,
+            from_status: updateResult.currentStatus,
+            to_status: updateResult.nextStatus,
+            via: 'callback',
+          },
+        });
+        await trackAnalytics(env, 'exchange_status_' + updateResult.nextStatus, 1);
+
+        const fresh = await dbGetExchangeProposal(env, proposalId);
+        const keyboard = buildExchangeStatusInlineKeyboard(
+          proposalId,
+          fresh?.status || updateResult.nextStatus
+        );
+
+        await tgSend(
+          env,
+          chatId,
+          callbackNoticeText(
+            '🔁 Exchange #' +
+              proposalId +
+              ': ' +
+              formatExchangeStatusLabel(updateResult.currentStatus) +
+              ' → ' +
+              formatExchangeStatusLabel(updateResult.nextStatus),
+            callback
+          ),
+          keyboard
+        );
+
+        return json({ ok: true });
+      }
     } catch (e) {
       console.log('callback action failed', e);
+      await reportRuntimeError(env, 'telegram_callback', e, {
+        callback_data: data,
+        chatId,
+      });
       await tgSend(
         env,
         chatId,
-        callbackNoticeText('❌ Delete action failed. Try again or use /delete <id>.', callback)
+        callbackNoticeText('❌ Action failed. Try again or use command fallback.', callback)
       );
       return json({ ok: true });
     }
@@ -1443,15 +1978,15 @@ async function handleTelegram(request, env) {
   if (!msg) return json({ ok: true });
 
   const chatId = String(msg.chat?.id ?? '');
-  const username = msg.from?.username ? `@${msg.from.username}` : '(no username)';
+  const username = msg.from?.username ? '@' + msg.from.username : '(no username)';
   const isAdmin = admins.includes(chatId);
   const msgText = typeof msg.text === 'string' ? normalizeAdminText(msg.text) : '';
 
   // /myid for everyone
   if (msgText === '/myid') {
-    await tgSend(env, chatId, `Your chat_id: ${chatId}\nusername: ${username}`);
+    await tgSend(env, chatId, 'Your chat_id: ' + chatId + '\nusername: ' + username);
     if (env.ADMIN_CHAT_ID) {
-      await tgSend(env, String(env.ADMIN_CHAT_ID), `👤 /myid from ${username}: chat_id=${chatId}`);
+      await tgSend(env, String(env.ADMIN_CHAT_ID), '👤 /myid from ' + username + ': chat_id=' + chatId);
     }
     return json({ ok: true });
   }
@@ -1481,7 +2016,7 @@ async function handleTelegram(request, env) {
     }
 
     if (cmd === '/stats') {
-      await tgSend(env, chatId, `📊 Available postcards: ${await dbStats(env)}`);
+      await tgSend(env, chatId, '📊 Available postcards: ' + (await dbStats(env)));
       return json({ ok: true });
     }
 
@@ -1490,7 +2025,7 @@ async function handleTelegram(request, env) {
       await tgSend(
         env,
         chatId,
-        last ? `🆕 Last: ${last.id}\nhttps://subach.uk/#${last.id}` : 'No postcards yet.'
+        last ? '🆕 Last: ' + last.id + '\nhttps://subach.uk/#' + last.id : 'No postcards yet.'
       );
       return json({ ok: true });
     }
@@ -1499,11 +2034,7 @@ async function handleTelegram(request, env) {
       const nRaw = Number(parts[1] || '20');
       const n = Number.isFinite(nRaw) ? Math.min(Math.max(nRaw, 1), 200) : 20;
       const ids = await dbList(env, n);
-      await tgSend(
-        env,
-        chatId,
-        ids.length ? `🗂️ Last ${ids.length} IDs:\n${ids.join('\n')}` : 'Empty.'
-      );
+      await tgSend(env, chatId, ids.length ? '🗂️ Last ' + ids.length + ' IDs:\n' + ids.join('\n') : 'Empty.');
       return json({ ok: true });
     }
 
@@ -1520,6 +2051,53 @@ async function handleTelegram(request, env) {
       const days = Number.isFinite(dRaw) ? Math.min(Math.max(dRaw, 1), 60) : 7;
       const rows = await readAnalytics(env, days);
       await tgSend(env, chatId, formatAnalytics(rows, days), adminKeyboard());
+      return json({ ok: true });
+    }
+
+    if (cmd === '/exchange' || cmd === '/exchanges') {
+      let limit = 10;
+      let statusFilter = '';
+
+      if (parts[1]) {
+        const maybeNum = Number(parts[1]);
+        if (Number.isFinite(maybeNum)) {
+          limit = Math.min(Math.max(maybeNum, 1), 30);
+        } else {
+          statusFilter = normalizeExchangeStatus(parts[1]);
+          if (!statusFilter) {
+            await tgSend(
+              env,
+              chatId,
+              'Usage: /exchange [n] [status]\nstatus: new | accepted | declined | completed'
+            );
+            return json({ ok: true });
+          }
+        }
+      }
+
+      if (parts[2]) {
+        statusFilter = normalizeExchangeStatus(parts[2]);
+        if (!statusFilter) {
+          await tgSend(
+            env,
+            chatId,
+            'Usage: /exchange [n] [status]\nstatus: new | accepted | declined | completed'
+          );
+          return json({ ok: true });
+        }
+      }
+
+      const listResult = await dbListExchangeProposals(env, limit, statusFilter);
+      if (!listResult.ok && listResult.missingTable) {
+        await tgSend(
+          env,
+          chatId,
+          'Exchange lifecycle storage is not initialized. Apply D1 migration 0006_request_guard_exchange_lifecycle_and_error_alerts.sql and retry.'
+        );
+        return json({ ok: true });
+      }
+
+      await tgSend(env, chatId, formatExchangeProposalsList(listResult.rows, statusFilter), adminKeyboard());
       return json({ ok: true });
     }
 
@@ -1540,7 +2118,7 @@ async function handleTelegram(request, env) {
 
       const parsedPhrase = normalizeAccessPhraseInput(nextPhrase);
       if (!parsedPhrase.ok) {
-        await tgSend(env, chatId, `Usage: /rotateaccess [new_phrase]\n${parsedPhrase.error}`);
+        await tgSend(env, chatId, 'Usage: /rotateaccess [new_phrase]\n' + parsedPhrase.error);
         return json({ ok: true });
       }
       nextPhrase = parsedPhrase.value;
@@ -1583,7 +2161,8 @@ async function handleTelegram(request, env) {
       await tgSend(
         env,
         chatId,
-        `✅ Access phrase rotated (${autoGenerated ? 'auto-generated' : 'custom'}).\n\n${formatAccessStateInfo(updatedState, getAccessTtlDays(env))}`,
+        '✅ Access phrase rotated (' + (autoGenerated ? 'auto-generated' : 'custom') + ').\n\n' +
+          formatAccessStateInfo(updatedState, getAccessTtlDays(env)),
         adminKeyboard()
       );
       return json({ ok: true });
@@ -1616,10 +2195,10 @@ async function handleTelegram(request, env) {
         details: { via: 'command_delete' },
       });
       if (!result.deleted) {
-        await tgSend(env, chatId, `Not found: ${id}`);
+        await tgSend(env, chatId, 'Not found: ' + id);
         return json({ ok: true });
       }
-      await tgSend(env, chatId, `🗑️ Deleted: ${result.id}`);
+      await tgSend(env, chatId, '🗑️ Deleted: ' + result.id);
       return json({ ok: true });
     }
 
@@ -1652,8 +2231,8 @@ async function handleTelegram(request, env) {
     const mid = photos[Math.max(0, Math.floor((photos.length - 1) / 2))];
 
     const id = makeId(6);
-    const fullKey = `cards/${id}/full.jpg`;
-    const thumbKey = `cards/${id}/thumb.jpg`;
+    const fullKey = 'cards/' + id + '/full.jpg';
+    const thumbKey = 'cards/' + id + '/thumb.jpg';
 
     const fullUrl = await tgGetFileUrl(env, large.file_id);
     const thumbUrl = await tgGetFileUrl(env, mid.file_id);
@@ -1676,11 +2255,12 @@ async function handleTelegram(request, env) {
     await tgSend(
       env,
       chatId,
-      `✅ Added: ${id} (${category})\nGallery: ${siteUrl}/#${id}\nDelete: /delete ${id}`,
+      '✅ Added: ' + id + ' (' + category + ')\nGallery: ' + siteUrl + '/#' + id + '\nDelete: /delete ' + id,
       adminKeyboard()
     );
   } catch (e) {
     console.log('upload error', e);
+    await reportRuntimeError(env, 'telegram_upload', e, { chatId, category });
     await tgSend(env, chatId, '❌ Upload failed. Check: npx wrangler tail');
   }
 
@@ -1751,60 +2331,78 @@ async function runMaintenance(env) {
   await dbDeleteExpiredAdminActions(env, now).catch((e) =>
     console.log('admin action cleanup failed', e)
   );
+  await cleanupRequestRateLimits(env, now - REQUEST_RATE_STATE_TTL_MS).catch((e) =>
+    console.log('request rate cleanup failed', e)
+  );
+  await cleanupErrorAlerts(env, now - ERROR_ALERT_STATE_TTL_MS).catch((e) =>
+    console.log('error alerts cleanup failed', e)
+  );
 }
 
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
 
-    if (url.pathname === '/tg') return handleTelegram(request, env);
-    if (url.pathname === '/api/unlock') return handleSiteUnlock(request, env);
-    if (url.pathname === '/api/logout') return handleSiteLogout(request, env);
+    try {
+      if (url.pathname === '/tg') return handleTelegram(request, env);
+      if (url.pathname === '/api/unlock') return handleSiteUnlock(request, env);
+      if (url.pathname === '/api/logout') return handleSiteLogout(request, env);
 
-    if (!(await isAccessAuthorized(request, env))) {
-      if (url.pathname.startsWith('/api/')) return buildLockedApiResponse();
-      if (request.method === 'GET' || request.method === 'HEAD') {
-        return buildAccessGatePage(getAccessTtlDays(env));
+      if (!(await isAccessAuthorized(request, env))) {
+        if (url.pathname.startsWith('/api/')) return buildLockedApiResponse();
+        if (request.method === 'GET' || request.method === 'HEAD') {
+          return buildAccessGatePage(getAccessTtlDays(env));
+        }
+        return text('locked', 401);
       }
-      return text('locked', 401);
-    }
 
-    if (url.pathname === '/api/cards') return listCards(env, url);
-    if (url.pathname === '/api/request') return handleWebRequest(request, env);
+      if (url.pathname === '/api/cards') return listCards(env, url);
+      if (url.pathname === '/api/request') return handleWebRequest(request, env);
 
-    if (url.pathname === '/api/config' && request.method === 'GET') {
-      return json({
-        turnstileSiteKey: String(env.TURNSTILE_SITE_KEY || ''),
-        siteUrl: String(env.SITE_URL || 'https://subach.uk'),
-        accessGateEnabled: await isAccessGateEnabled(env),
+      if (url.pathname === '/api/config' && request.method === 'GET') {
+        return json({
+          turnstileSiteKey: String(env.TURNSTILE_SITE_KEY || ''),
+          siteUrl: String(env.SITE_URL || 'https://subach.uk'),
+          accessGateEnabled: await isAccessGateEnabled(env),
+        });
+      }
+
+      if (url.pathname === '/api/categories' && request.method === 'GET') {
+        return getCategories();
+      }
+
+      const img = url.pathname.match(/^\/img\/([0-9a-z]+)\.jpg$/i);
+      if (img) {
+        const id = img[1];
+        const card = await dbGetCard(env, id);
+        if (!card) return text('not found', 404);
+        return serveImage(env, card.image_key);
+      }
+
+      const th = url.pathname.match(/^\/thumb\/([0-9a-z]+)\.jpg$/i);
+      if (th) {
+        const id = th[1];
+        const card = await dbGetCard(env, id);
+        if (!card) return text('not found', 404);
+        return serveImage(env, card.thumb_key);
+      }
+
+      // Static assets from public/
+      return env.ASSETS.fetch(request);
+    } catch (e) {
+      await reportRuntimeError(env, 'fetch', e, {
+        path: url.pathname,
+        method: request.method,
       });
+      return text('internal error', 500);
     }
-
-    if (url.pathname === '/api/categories' && request.method === 'GET') {
-      return getCategories();
-    }
-
-    const img = url.pathname.match(/^\/img\/([0-9a-z]+)\.jpg$/i);
-    if (img) {
-      const id = img[1];
-      const card = await dbGetCard(env, id);
-      if (!card) return text('not found', 404);
-      return serveImage(env, card.image_key);
-    }
-
-    const th = url.pathname.match(/^\/thumb\/([0-9a-z]+)\.jpg$/i);
-    if (th) {
-      const id = th[1];
-      const card = await dbGetCard(env, id);
-      if (!card) return text('not found', 404);
-      return serveImage(env, card.thumb_key);
-    }
-
-    // Static assets from public/
-    return env.ASSETS.fetch(request);
   },
 
   async scheduled(_event, env) {
-    await runMaintenance(env);
+    try {
+      await runMaintenance(env);
+    } catch (e) {
+      await reportRuntimeError(env, 'scheduled', e, {});
+    }
   },
 };
