@@ -40,6 +40,7 @@ CREATE TABLE IF NOT EXISTS exchange_proposals (
   proposal_id INTEGER PRIMARY KEY AUTOINCREMENT,
   requested_ids_json TEXT NOT NULL,
   offered_cards_json TEXT NOT NULL,
+  offer_photo_count INTEGER NOT NULL DEFAULT 0,
   name TEXT NOT NULL,
   message TEXT,
   created_at INTEGER NOT NULL,

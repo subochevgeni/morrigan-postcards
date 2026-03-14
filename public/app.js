@@ -50,6 +50,8 @@ const reqMsg = $('reqMsg');
 const reqExchangeToggle = $('reqExchangeToggle');
 const reqExchangeFields = $('reqExchangeFields');
 const reqOfferCards = $('reqOfferCards');
+const reqOfferPhotos = $('reqOfferPhotos');
+const reqOfferPhotoMeta = $('reqOfferPhotoMeta');
 const reqWebsite = $('reqWebsite');
 const reqStatus = $('reqStatus');
 const reqSubmit = $('reqSubmit');
@@ -76,14 +78,23 @@ const MODAL_CLOSE_DELAY_MS = 1200;
 const TURNSTILE_RESET_DELAY_MS = 200;
 const MAX_EXCHANGE_REQUEST_IDS = 3;
 const MAX_EXCHANGE_OFFER_CARDS = 3;
+const MAX_EXCHANGE_OFFER_PHOTOS = 3;
+const MAX_EXCHANGE_PHOTO_BYTES = 4 * 1024 * 1024;
+const EXCHANGE_PHOTO_HINT = 'Add up to 3 photos in JPEG, PNG, or WebP format. Max 4 MB per file.';
+const ALLOWED_EXCHANGE_PHOTO_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp']);
 const STATUS_MESSAGES = {
   missingName: '❌ Please enter your nickname / handle.',
   missingTurnstile: '❌ Please complete the anti-spam check (Turnstile).',
   pendingCard: '❌ This postcard is currently pending another request.',
   missingSelection: '❌ Please select a postcard or add some to the cart first.',
   tooManyExchangeRequested: '❌ Exchange mode supports up to 3 requested postcards.',
-  missingOfferedCards: '❌ Add 1-3 postcards you offer (one per line).',
+  missingOfferedCards: '❌ Add 1-3 offered postcards and/or upload up to 3 offer photos.',
   tooManyOfferedCards: '❌ You can offer at most 3 postcards.',
+  tooManyOfferPhotos: '❌ You can upload at most 3 offer photos.',
+  offerPhotoTooLarge: '❌ Each offer photo must be 4 MB or smaller.',
+  offerPhotoBadType: '❌ Offer photos must be JPEG, PNG, or WebP.',
+  offerPhotoBadContent: '❌ One of the uploaded photos looks invalid. Please re-export it and retry.',
+  payloadTooLarge: '❌ Uploaded files are too large. Please use smaller photos.',
   deduped: 'ℹ️ Similar request was already sent recently. We will still review it.',
   sent: '✅ Request sent! We will review it and contact you.',
   exchangeSent: '✅ Exchange offer sent! We will review it and contact you.',
@@ -143,6 +154,14 @@ function syncExchangeOfferUI() {
   reqExchangeFields.classList.toggle('hidden', !reqExchangeToggle.checked);
 }
 
+function formatBytes(bytes) {
+  const value = Number(bytes || 0);
+  if (!Number.isFinite(value) || value <= 0) return '0 B';
+  if (value >= 1024 * 1024) return `${(value / (1024 * 1024)).toFixed(1)} MB`;
+  if (value >= 1024) return `${Math.round(value / 1024)} KB`;
+  return `${value} B`;
+}
+
 function normalizeOfferedCardsInput(rawText, limit = MAX_EXCHANGE_OFFER_CARDS) {
   const unique = Array.from(
     new Set(
@@ -158,14 +177,49 @@ function normalizeOfferedCardsInput(rawText, limit = MAX_EXCHANGE_OFFER_CARDS) {
   };
 }
 
+function normalizeExchangePhotoFiles(fileList, limit = MAX_EXCHANGE_OFFER_PHOTOS) {
+  const raw = Array.from(fileList || []).filter(Boolean);
+  const files = raw.slice(0, limit);
+  let invalidType = false;
+  let tooLarge = false;
+  let totalBytes = 0;
+
+  for (const file of files) {
+    totalBytes += Number(file.size || 0);
+    if (!ALLOWED_EXCHANGE_PHOTO_TYPES.has(String(file.type || '').toLowerCase())) invalidType = true;
+    if (Number(file.size || 0) > MAX_EXCHANGE_PHOTO_BYTES) tooLarge = true;
+  }
+
+  return {
+    files,
+    total: raw.length,
+    totalBytes,
+    invalidType,
+    tooLarge,
+  };
+}
+
+function updateExchangePhotoMeta() {
+  if (!reqOfferPhotoMeta) return;
+  const info = normalizeExchangePhotoFiles(reqOfferPhotos ? reqOfferPhotos.files : null);
+  if (!info.total) {
+    reqOfferPhotoMeta.textContent = EXCHANGE_PHOTO_HINT;
+    return;
+  }
+  reqOfferPhotoMeta.textContent =
+    `${info.files.length} photo${info.files.length === 1 ? '' : 's'} selected · ${formatBytes(info.totalBytes)}`;
+}
+
 function resetRequestDraft() {
   reqStatus.textContent = '';
   reqName.value = '';
   reqMsg.value = '';
   reqWebsite.value = '';
   if (reqOfferCards) reqOfferCards.value = '';
+  if (reqOfferPhotos) reqOfferPhotos.value = '';
   if (reqExchangeToggle) reqExchangeToggle.checked = false;
   syncExchangeOfferUI();
+  updateExchangePhotoMeta();
 }
 
 function handleRequestSuccess({ isCart, deduped, exchange }) {
@@ -190,6 +244,16 @@ function handleRequestFailure(status, responseText = '') {
     reqStatus.textContent = STATUS_MESSAGES.badName;
   } else if (status === 400 && responseText === 'bad message') {
     reqStatus.textContent = STATUS_MESSAGES.badMessage;
+  } else if (status === 400 && responseText === 'too many offer photos') {
+    reqStatus.textContent = STATUS_MESSAGES.tooManyOfferPhotos;
+  } else if (status === 400 && responseText === 'offer photo too large') {
+    reqStatus.textContent = STATUS_MESSAGES.offerPhotoTooLarge;
+  } else if (status === 400 && responseText === 'offer photo bad type') {
+    reqStatus.textContent = STATUS_MESSAGES.offerPhotoBadType;
+  } else if (status === 400 && responseText === 'offer photo bad content') {
+    reqStatus.textContent = STATUS_MESSAGES.offerPhotoBadContent;
+  } else if (status === 413 && responseText === 'payload too large') {
+    reqStatus.textContent = STATUS_MESSAGES.payloadTooLarge;
   } else {
     reqStatus.textContent =
       '❌ Failed to send. ' + (responseText ? '(' + responseText + ')' : 'Please try again.');
@@ -532,6 +596,7 @@ form.addEventListener('submit', async (e) => {
   const message = reqMsg.value.trim();
   const exchangeMode = Boolean(reqExchangeToggle?.checked);
   const offeredCards = normalizeOfferedCardsInput(reqOfferCards ? reqOfferCards.value : '');
+  const offerPhotos = normalizeExchangePhotoFiles(reqOfferPhotos ? reqOfferPhotos.files : null);
 
   if (!name) {
     reqStatus.textContent = STATUS_MESSAGES.missingName;
@@ -557,12 +622,24 @@ form.addEventListener('submit', async (e) => {
     reqStatus.textContent = STATUS_MESSAGES.tooManyExchangeRequested;
     return;
   }
-  if (exchangeMode && offeredCards.total === 0) {
+  if (exchangeMode && offeredCards.total === 0 && offerPhotos.total === 0) {
     reqStatus.textContent = STATUS_MESSAGES.missingOfferedCards;
     return;
   }
   if (exchangeMode && offeredCards.total > MAX_EXCHANGE_OFFER_CARDS) {
     reqStatus.textContent = STATUS_MESSAGES.tooManyOfferedCards;
+    return;
+  }
+  if (exchangeMode && offerPhotos.total > MAX_EXCHANGE_OFFER_PHOTOS) {
+    reqStatus.textContent = STATUS_MESSAGES.tooManyOfferPhotos;
+    return;
+  }
+  if (exchangeMode && offerPhotos.invalidType) {
+    reqStatus.textContent = STATUS_MESSAGES.offerPhotoBadType;
+    return;
+  }
+  if (exchangeMode && offerPhotos.tooLarge) {
+    reqStatus.textContent = STATUS_MESSAGES.offerPhotoTooLarge;
     return;
   }
 
@@ -583,11 +660,30 @@ form.addEventListener('submit', async (e) => {
   reqStatus.textContent = 'Sending…';
 
   try {
-    const r = await fetch('/api/request', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
+    let requestInit;
+    if (exchangeMode && offerPhotos.files.length > 0) {
+      const formData = new FormData();
+      formData.set('name', name);
+      formData.set('message', message);
+      formData.set('website', reqWebsite.value.trim());
+      formData.set('turnstileToken', token);
+      formData.set('exchangeOffer', 'true');
+      formData.set('offeredCards', JSON.stringify(offeredCards.cards));
+      if (isCart) formData.set('ids', JSON.stringify(cartIds.slice()));
+      else formData.set('id', currentId);
+      for (const file of offerPhotos.files) {
+        formData.append('exchangePhotos', file, file.name || 'offer-photo');
+      }
+      requestInit = { method: 'POST', body: formData };
+    } else {
+      requestInit = {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(payload),
+      };
+    }
+
+    const r = await fetch('/api/request', requestInit);
 
     if (r.ok) {
       const payloadData = await r.json().catch(() => ({}));
@@ -613,6 +709,7 @@ form.addEventListener('submit', async (e) => {
   await fetchConfig();
   syncAccessGateUI();
   syncExchangeOfferUI();
+  updateExchangePhotoMeta();
 
   if (!TURNSTILE_SITE_KEY) {
     TURNSTILE_SITE_KEY = '0x4AAAAAACW5TtAmWWLLFZ7V';
@@ -649,3 +746,5 @@ form.addEventListener('submit', async (e) => {
   load();
   scheduleAutoRefresh();
 })();
+
+if (reqOfferPhotos) reqOfferPhotos.addEventListener('change', updateExchangePhotoMeta);

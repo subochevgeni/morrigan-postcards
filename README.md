@@ -18,7 +18,7 @@ Cloudflare Workers project for postcard exchange:
 
 - Browse postcards with category filter and search by ID
 - Add postcards to cart and send one request for multiple items
-- Optional exchange-offer mode: user can request up to 3 cards and attach up to 3 offered cards
+- Optional exchange-offer mode: user can request up to 3 cards, attach up to 3 offered-card notes, and optionally upload up to 3 offer photos
 - Exchange proposal lifecycle in Telegram (`new`, `accepted`, `declined`, `completed`) with inline actions
 - Automatic card reservation (`pending`) after request to prevent race conditions
 - Duplicate request suppression window
@@ -106,6 +106,7 @@ Current migrations:
 - `0004_site_access_state.sql`
 - `0005_exchange_proposals.sql`
 - `0006_request_guard_exchange_lifecycle_and_error_alerts.sql`
+- `0007_exchange_offer_photo_count.sql`
 
 ## Deploy
 

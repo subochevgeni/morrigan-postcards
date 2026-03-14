@@ -38,6 +38,11 @@ const REQUEST_RATE_STATE_TTL_MS = 1000 * 60 * 60 * 24 * 14;
 const ERROR_ALERT_THROTTLE_MS = 1000 * 60 * 5;
 const ERROR_ALERT_STATE_TTL_MS = 1000 * 60 * 60 * 24 * 30;
 const EXCHANGE_STATUS_VALUES = ['new', 'accepted', 'declined', 'completed'];
+const MAX_EXCHANGE_OFFER_PHOTOS = 3;
+const MAX_EXCHANGE_PHOTO_BYTES = 4 * 1024 * 1024;
+const MAX_EXCHANGE_TOTAL_UPLOAD_BYTES = MAX_EXCHANGE_OFFER_PHOTOS * MAX_EXCHANGE_PHOTO_BYTES;
+const MAX_EXCHANGE_MULTIPART_BYTES = MAX_EXCHANGE_TOTAL_UPLOAD_BYTES + 512 * 1024;
+const ALLOWED_EXCHANGE_PHOTO_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp']);
 const LOCAL_ERROR_ALERT_STATE = new Map();
 
 function base64UrlFromArrayBuffer(buf) {
@@ -514,6 +519,18 @@ async function tgSend(env, chatId, msg, replyMarkup = null) {
 async function tgSendPhoto(env, chatId, photoUrl, caption) {
   // Telegram can fetch the photo directly from an HTTP URL.
   await tgApi(env, 'sendPhoto', { chat_id: chatId, photo: photoUrl, caption });
+}
+
+async function tgSendLocalPhoto(env, chatId, file, caption = '') {
+  const url = `https://api.telegram.org/bot${env.TG_BOT_TOKEN}/sendPhoto`;
+  const form = new FormData();
+  form.set('chat_id', chatId);
+  if (caption) form.set('caption', caption);
+  form.set('photo', file, file.name || 'offer-photo');
+  const r = await fetch(url, { method: 'POST', body: form });
+  const data = await r.json().catch(() => ({}));
+  if (!data?.ok) console.log('tgApi error', 'sendPhoto(local)', data);
+  return data;
 }
 
 async function tgSendMediaGroup(env, chatId, media) {
@@ -1275,13 +1292,16 @@ async function dbList(env, limit) {
   return (results || []).map((r) => r.id);
 }
 
-async function dbInsertExchangeProposal(env, { postcardIds, offeredCards, name, message, createdAt }) {
-  const idsJson = JSON.stringify(cleanPostcardIds(postcardIds, MAX_CART_IDS));
+async function dbInsertExchangeProposal(
+  env,
+  { postcardIds, offeredCards, offerPhotoCount = 0, name, message, createdAt }
+) {
+  const idsJson = JSON.stringify(cleanPostcardIds(postcardIds, MAX_EXCHANGE_REQUEST_IDS));
   const offersJson = JSON.stringify(offeredCards);
   const res = await env.DB.prepare(
-    'INSERT INTO exchange_proposals (requested_ids_json, offered_cards_json, name, message, created_at) VALUES (?1, ?2, ?3, ?4, ?5)'
+    'INSERT INTO exchange_proposals (requested_ids_json, offered_cards_json, offer_photo_count, name, message, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)'
   )
-    .bind(idsJson, offersJson, name, message || null, createdAt)
+    .bind(idsJson, offersJson, Number(offerPhotoCount || 0), name, message || null, createdAt)
     .run();
 
   const proposalId =
@@ -1303,7 +1323,7 @@ async function dbInsertExchangeProposal(env, { postcardIds, offeredCards, name, 
 async function dbGetExchangeProposal(env, proposalId) {
   try {
     const row = await env.DB.prepare(
-      'SELECT proposal_id, requested_ids_json, offered_cards_json, name, message, created_at, status, decided_at, decided_by_chat_id, decision_note FROM exchange_proposals WHERE proposal_id=?1'
+      'SELECT proposal_id, requested_ids_json, offered_cards_json, offer_photo_count, name, message, created_at, status, decided_at, decided_by_chat_id, decision_note FROM exchange_proposals WHERE proposal_id=?1'
     )
       .bind(proposalId)
       .first();
@@ -1372,12 +1392,12 @@ async function dbListExchangeProposals(env, limit = 10, status = '') {
     const stmt = statusFilter
       ? env.DB
           .prepare(
-            'SELECT proposal_id, requested_ids_json, offered_cards_json, name, message, created_at, status, decided_at, decided_by_chat_id FROM exchange_proposals WHERE status=?1 ORDER BY created_at DESC LIMIT ?2'
+            'SELECT proposal_id, requested_ids_json, offered_cards_json, offer_photo_count, name, message, created_at, status, decided_at, decided_by_chat_id FROM exchange_proposals WHERE status=?1 ORDER BY created_at DESC LIMIT ?2'
           )
           .bind(statusFilter, safeLimit)
       : env.DB
           .prepare(
-            'SELECT proposal_id, requested_ids_json, offered_cards_json, name, message, created_at, status, decided_at, decided_by_chat_id FROM exchange_proposals ORDER BY created_at DESC LIMIT ?1'
+            'SELECT proposal_id, requested_ids_json, offered_cards_json, offer_photo_count, name, message, created_at, status, decided_at, decided_by_chat_id FROM exchange_proposals ORDER BY created_at DESC LIMIT ?1'
           )
           .bind(safeLimit);
     const { results } = await stmt.all();
@@ -1409,6 +1429,7 @@ function formatExchangeProposalsList(rows, statusFilter = '') {
         ' · ' + formatExchangeStatusLabel(row.status) +
         '\nRequested: ' + (ids.length ? ids.join(', ') : '—') +
         '\nOffered: ' + (offers.length ? offers.join(' | ') : '—') +
+        '\nPhotos: ' + Number(row.offer_photo_count || 0) +
         '\nName: ' + String(row.name || '—') +
         '\nCreated: ' + formatRequestTimestamp(row.created_at) +
         (row.decided_at ? '\nDecided: ' + formatRequestTimestamp(row.decided_at) : '') +
@@ -1471,6 +1492,7 @@ function buildAdminExchangeOfferText({
   status = 'new',
   postcardIds,
   offeredCards,
+  offerPhotoCount = 0,
   name,
   message,
   siteUrl,
@@ -1485,6 +1507,9 @@ function buildAdminExchangeOfferText({
   const offersBlock = offers.length
     ? '🎁 Offered by user (' + offers.length + '):\n' + offers.map((x) => '• ' + x).join('\n')
     : '🎁 Offered by user: —';
+  const photosBlock = offerPhotoCount
+    ? '🖼 Offer photos: ' + offerPhotoCount
+    : '🖼 Offer photos: —';
   const siteLink = isMulti ? siteUrl : siteUrl + '/#' + (ids[0] || '');
   const statusLabel = formatExchangeStatusLabel(status);
 
@@ -1495,6 +1520,7 @@ function buildAdminExchangeOfferText({
     '📌 Status: ' + statusLabel + '\n' +
     idsBlock + '\n' +
     offersBlock + '\n' +
+    photosBlock + '\n' +
     '👤 Name: ' + name + '\n' +
     '💬 Message: ' + (message || '—') + '\n' +
     '🕒 ' + formatRequestTimestamp(createdAt) + '\n' +
@@ -1519,6 +1545,127 @@ function normalizeOfferedCards(raw, limit = MAX_EXCHANGE_OFFER_CARDS) {
   return {
     cards: clean.slice(0, limit),
     total: clean.length,
+  };
+}
+
+function parseBooleanLike(raw) {
+  const value = String(raw || '')
+    .trim()
+    .toLowerCase();
+  return value === '1' || value === 'true' || value === 'yes' || value === 'on';
+}
+
+function getRequestContentLength(request) {
+  const raw = Number(request.headers.get('content-length') || 0);
+  return Number.isFinite(raw) && raw > 0 ? raw : 0;
+}
+
+function normalizeMultipartOfferedCards(raw) {
+  if (typeof raw !== 'string') return [];
+  const trimmed = raw.trim();
+  if (!trimmed) return [];
+  if (trimmed.startsWith('[')) return parseJsonArraySafe(trimmed);
+  return trimmed
+    .split('\n')
+    .map((x) => x.trim())
+    .filter(Boolean);
+}
+
+function normalizeMultipartIds(formData) {
+  const all = formData
+    .getAll('ids')
+    .map((x) => String(x || '').trim())
+    .filter(Boolean);
+  if (!all.length) return [];
+  if (all.length === 1 && all[0].startsWith('[')) return parseJsonArraySafe(all[0]);
+  return all;
+}
+
+function sniffExchangePhotoKind(bytes) {
+  if (!(bytes instanceof Uint8Array) || bytes.length < 12) return null;
+  if (bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) {
+    return { mime: 'image/jpeg', ext: 'jpg' };
+  }
+  if (
+    bytes[0] === 0x89 &&
+    bytes[1] === 0x50 &&
+    bytes[2] === 0x4e &&
+    bytes[3] === 0x47 &&
+    bytes[4] === 0x0d &&
+    bytes[5] === 0x0a &&
+    bytes[6] === 0x1a &&
+    bytes[7] === 0x0a
+  ) {
+    return { mime: 'image/png', ext: 'png' };
+  }
+  if (
+    bytes[0] === 0x52 &&
+    bytes[1] === 0x49 &&
+    bytes[2] === 0x46 &&
+    bytes[3] === 0x46 &&
+    bytes[8] === 0x57 &&
+    bytes[9] === 0x45 &&
+    bytes[10] === 0x42 &&
+    bytes[11] === 0x50
+  ) {
+    return { mime: 'image/webp', ext: 'webp' };
+  }
+  return null;
+}
+
+function buildExchangePhotoFilename(index, ext) {
+  return `exchange-offer-${index}.${ext}`;
+}
+
+async function normalizeExchangePhotoUploads(rawFiles, limit = MAX_EXCHANGE_OFFER_PHOTOS) {
+  const files = Array.isArray(rawFiles) ? rawFiles.filter(Boolean) : [];
+  if (files.length > limit) return { ok: false, status: 400, error: 'too many offer photos' };
+
+  const normalized = [];
+  let totalBytes = 0;
+
+  for (let i = 0; i < files.length; i++) {
+    const file = files[i];
+    if (!file || typeof file.arrayBuffer !== 'function') {
+      return { ok: false, status: 400, error: 'offer photo bad content' };
+    }
+
+    const declaredType = String(file.type || '').trim().toLowerCase();
+    if (declaredType && !ALLOWED_EXCHANGE_PHOTO_TYPES.has(declaredType)) {
+      return { ok: false, status: 400, error: 'offer photo bad type' };
+    }
+
+    const size = Number(file.size || 0);
+    if (!Number.isFinite(size) || size <= 0) {
+      return { ok: false, status: 400, error: 'offer photo bad content' };
+    }
+    if (size > MAX_EXCHANGE_PHOTO_BYTES) {
+      return { ok: false, status: 400, error: 'offer photo too large' };
+    }
+
+    totalBytes += size;
+    if (totalBytes > MAX_EXCHANGE_TOTAL_UPLOAD_BYTES) {
+      return { ok: false, status: 413, error: 'payload too large' };
+    }
+
+    const buffer = await file.arrayBuffer();
+    const detected = sniffExchangePhotoKind(new Uint8Array(buffer));
+    if (!detected) return { ok: false, status: 400, error: 'offer photo bad content' };
+
+    normalized.push({
+      size,
+      mime: detected.mime,
+      file: new File([buffer], buildExchangePhotoFilename(i + 1, detected.ext), {
+        type: detected.mime,
+      }),
+    });
+  }
+
+  return {
+    ok: true,
+    total: normalized.length,
+    totalBytes,
+    files: normalized,
   };
 }
 
@@ -1561,6 +1708,21 @@ async function notifyAdminsWithRequestCards(env, postcardIds, requestText) {
           await tgSendPhoto(env, adminId, `${siteUrl}/thumb/${id}.jpg`, `ID: ${id}`);
         }
       }
+    }
+  }
+}
+
+async function notifyAdminsWithExchangeOfferPhotos(env, proposalId, uploadedPhotos) {
+  const photos = Array.isArray(uploadedPhotos) ? uploadedPhotos : [];
+  if (!photos.length) return;
+
+  for (const adminId of getAdminList(env)) {
+    for (let i = 0; i < photos.length; i++) {
+      const caption =
+        i === 0
+          ? `🖼 Offer photos for proposal #${proposalId}\nPhoto ${i + 1}/${photos.length}`
+          : `Proposal #${proposalId} · photo ${i + 1}/${photos.length}`;
+      await tgSendLocalPhoto(env, adminId, photos[i].file, caption);
     }
   }
 }
@@ -1615,18 +1777,55 @@ async function verifyTurnstile(request, env, token) {
   return { ok: true, data };
 }
 
+async function readRequestPayload(request) {
+  const contentType = String(request.headers.get('content-type') || '').toLowerCase();
+
+  if (contentType.includes('multipart/form-data')) {
+    if (getRequestContentLength(request) > MAX_EXCHANGE_MULTIPART_BYTES) {
+      return { ok: false, status: 413, error: 'payload too large' };
+    }
+
+    let formData;
+    try {
+      formData = await request.formData();
+    } catch {
+      return { ok: false, status: 400, error: 'bad form data' };
+    }
+
+    return {
+      ok: true,
+      body: {
+        id: String(formData.get('id') || '').trim(),
+        ids: normalizeMultipartIds(formData),
+        name: String(formData.get('name') || ''),
+        message: String(formData.get('message') || ''),
+        website: String(formData.get('website') || ''),
+        turnstileToken: String(formData.get('turnstileToken') || ''),
+        exchangeOffer: parseBooleanLike(formData.get('exchangeOffer')),
+        offeredCards: normalizeMultipartOfferedCards(formData.get('offeredCards')),
+        exchangePhotos: formData
+          .getAll('exchangePhotos')
+          .filter((x) => x && typeof x.arrayBuffer === 'function'),
+      },
+    };
+  }
+
+  try {
+    return { ok: true, body: await request.json() };
+  } catch {
+    return { ok: false, status: 400, error: 'bad json' };
+  }
+}
+
 async function handleWebRequest(request, env) {
   if (request.method !== 'POST') return text('method not allowed', 405);
 
   try {
     await releaseExpiredReservations(env);
 
-    let body;
-    try {
-      body = await request.json();
-    } catch {
-      return text('bad json', 400);
-    }
+    const payload = await readRequestPayload(request);
+    if (!payload.ok) return text(payload.error, payload.status);
+    const body = payload.body || {};
 
     // Honeypot
     if (String(body?.website || '').trim()) return json({ ok: true });
@@ -1642,9 +1841,14 @@ async function handleWebRequest(request, env) {
     const token = String(body?.turnstileToken || '').trim();
     const exchangeMode = Boolean(body?.exchangeOffer) || Array.isArray(body?.offeredCards);
     const offeredCards = normalizeOfferedCards(body?.offeredCards, MAX_EXCHANGE_OFFER_CARDS);
+    const uploadedPhotos = await normalizeExchangePhotoUploads(body?.exchangePhotos);
 
     if (!token) return text('turnstile required', 403);
-    if (exchangeMode && offeredCards.total === 0) return text('offered cards required', 400);
+    if (!uploadedPhotos.ok) return text(uploadedPhotos.error, uploadedPhotos.status);
+    if (!exchangeMode && uploadedPhotos.total > 0) return text('exchange photos require exchange mode', 400);
+    if (exchangeMode && offeredCards.total === 0 && uploadedPhotos.total === 0) {
+      return text('offered cards required', 400);
+    }
     if (exchangeMode && offeredCards.total > MAX_EXCHANGE_OFFER_CARDS) {
       return text('too many offered cards', 400);
     }
@@ -1708,6 +1912,7 @@ async function handleWebRequest(request, env) {
         proposalId = await dbInsertExchangeProposal(env, {
           postcardIds,
           offeredCards: offeredCards.cards,
+          offerPhotoCount: uploadedPhotos.total,
           name,
           message,
           createdAt: now,
@@ -1722,6 +1927,7 @@ async function handleWebRequest(request, env) {
         status: 'new',
         postcardIds,
         offeredCards: offeredCards.cards,
+        offerPhotoCount: uploadedPhotos.total,
         name,
         message,
         siteUrl,
@@ -1737,6 +1943,10 @@ async function handleWebRequest(request, env) {
       await notifyAdminsWithRequestCards(env, postcardIds, adminText);
     } else {
       await notifyAdminsWithRequestCard(env, postcardIds[0], adminText);
+    }
+    if (exchangeMode && uploadedPhotos.total) {
+      await notifyAdminsWithExchangeOfferPhotos(env, proposalId, uploadedPhotos.files);
+      await trackAnalytics(env, 'exchange_offer_photo_uploaded', uploadedPhotos.total, now);
     }
 
     if (exchangeMode && proposalId) {

@@ -491,7 +491,7 @@ describe('worker.fetch integration', () => {
 
             if (
               sql.includes(
-                'INSERT INTO exchange_proposals (requested_ids_json, offered_cards_json, name, message, created_at) VALUES (?1, ?2, ?3, ?4, ?5)'
+                'INSERT INTO exchange_proposals (requested_ids_json, offered_cards_json, offer_photo_count, name, message, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)'
               )
             ) {
               return {
@@ -501,9 +501,10 @@ describe('worker.fetch integration', () => {
                     proposal_id: proposalId,
                     requested_ids_json: args[0],
                     offered_cards_json: args[1],
-                    name: args[2],
-                    message: args[3],
-                    created_at: args[4],
+                    offer_photo_count: args[2],
+                    name: args[3],
+                    message: args[4],
+                    created_at: args[5],
                     status: 'new',
                     decided_at: null,
                     decided_by_chat_id: null,
@@ -743,7 +744,7 @@ describe('worker.fetch integration', () => {
 
             if (
               sql.includes(
-                'SELECT proposal_id, requested_ids_json, offered_cards_json, name, message, created_at, status, decided_at, decided_by_chat_id, decision_note FROM exchange_proposals WHERE proposal_id=?1'
+                'SELECT proposal_id, requested_ids_json, offered_cards_json, offer_photo_count, name, message, created_at, status, decided_at, decided_by_chat_id, decision_note FROM exchange_proposals WHERE proposal_id=?1'
               )
             ) {
               const [proposalId] = args;
@@ -799,7 +800,7 @@ describe('worker.fetch integration', () => {
 
             if (
               sql.includes(
-                'SELECT proposal_id, requested_ids_json, offered_cards_json, name, message, created_at, status, decided_at, decided_by_chat_id FROM exchange_proposals WHERE status=?1 ORDER BY created_at DESC LIMIT ?2'
+                'SELECT proposal_id, requested_ids_json, offered_cards_json, offer_photo_count, name, message, created_at, status, decided_at, decided_by_chat_id FROM exchange_proposals WHERE status=?1 ORDER BY created_at DESC LIMIT ?2'
               )
             ) {
               const [statusFilter, limit] = args;
@@ -815,7 +816,7 @@ describe('worker.fetch integration', () => {
 
             if (
               sql.includes(
-                'SELECT proposal_id, requested_ids_json, offered_cards_json, name, message, created_at, status, decided_at, decided_by_chat_id FROM exchange_proposals ORDER BY created_at DESC LIMIT ?1'
+                'SELECT proposal_id, requested_ids_json, offered_cards_json, offer_photo_count, name, message, created_at, status, decided_at, decided_by_chat_id FROM exchange_proposals ORDER BY created_at DESC LIMIT ?1'
               )
             ) {
               const [limit] = args;
@@ -1184,6 +1185,120 @@ describe('worker.fetch integration', () => {
 
       expect(exchangePayload).toBeTruthy();
       expect(exchangePayload.text).toContain('Offered by user (3)');
+    } finally {
+      global.fetch = prevFetch;
+    }
+  });
+
+  it('handles exchange offer request with uploaded offer photos via multipart form data', async () => {
+    const insertedRequests = [];
+    const insertedExchangeProposals = [];
+    const db = createDbMock({
+      availableIds: ['abc123', 'def456'],
+      insertedRequests,
+      insertedExchangeProposals,
+    });
+    const env = createEnv({ db, adminChatIds: '1001' });
+
+    const fetchMock = vi.fn(async (url) => {
+      if (url.includes('/turnstile/v0/siteverify')) {
+        return { json: async () => ({ success: true, hostname: 'example.com' }) };
+      }
+      if (url.includes('/sendMessage')) return { json: async () => ({ ok: true }) };
+      if (url.includes('/sendMediaGroup')) return { json: async () => ({ ok: true }) };
+      if (url.includes('/sendPhoto')) return { json: async () => ({ ok: true, result: {} }) };
+      throw new Error(`Unexpected fetch URL: ${url}`);
+    });
+    const prevFetch = global.fetch;
+    global.fetch = fetchMock;
+
+    try {
+      const formData = new FormData();
+      formData.set('ids', JSON.stringify(['abc123', 'def456']));
+      formData.set('name', 'John Doe');
+      formData.set('message', 'Photos attached');
+      formData.set('website', '');
+      formData.set('turnstileToken', 'valid-token');
+      formData.set('exchangeOffer', 'true');
+      formData.set('offeredCards', JSON.stringify([]));
+      formData.append(
+        'exchangePhotos',
+        new File([Uint8Array.from([255, 216, 255, 224, 0, 16, 74, 70, 73, 70, 0, 1])], 'a.jpg', {
+          type: 'image/jpeg',
+        })
+      );
+      formData.append(
+        'exchangePhotos',
+        new File([Uint8Array.from([137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 0])], 'b.png', {
+          type: 'image/png',
+        })
+      );
+
+      const response = await worker.fetch(
+        new Request('https://example.com/api/request', {
+          method: 'POST',
+          body: formData,
+        }),
+        env
+      );
+      const data = await response.json();
+
+      expect(response.status).toBe(200);
+      expect(data).toMatchObject({ ok: true, exchange: true });
+      expect(insertedRequests).toHaveLength(2);
+      expect(insertedExchangeProposals).toHaveLength(1);
+      expect(insertedExchangeProposals[0].offer_photo_count).toBe(2);
+
+      const sendPhotoCalls = fetchMock.mock.calls.filter(([url]) =>
+        String(url).includes('/sendPhoto')
+      );
+      expect(sendPhotoCalls).toHaveLength(2);
+      expect(sendPhotoCalls.every(([, init]) => init.body instanceof FormData)).toBe(true);
+    } finally {
+      global.fetch = prevFetch;
+    }
+  });
+
+  it('rejects exchange offer request when uploaded file type is not allowed', async () => {
+    const insertedExchangeProposals = [];
+    const db = createDbMock({
+      availableIds: ['abc123'],
+      insertedExchangeProposals,
+    });
+    const env = createEnv({ db, adminChatIds: '1001' });
+
+    const fetchMock = vi.fn(async (url) => {
+      if (url.includes('/turnstile/v0/siteverify')) {
+        return { json: async () => ({ success: true, hostname: 'example.com' }) };
+      }
+      throw new Error(`Unexpected fetch URL: ${url}`);
+    });
+    const prevFetch = global.fetch;
+    global.fetch = fetchMock;
+
+    try {
+      const formData = new FormData();
+      formData.set('id', 'abc123');
+      formData.set('name', 'John Doe');
+      formData.set('message', '');
+      formData.set('website', '');
+      formData.set('turnstileToken', 'valid-token');
+      formData.set('exchangeOffer', 'true');
+      formData.set('offeredCards', JSON.stringify([]));
+      formData.append('exchangePhotos', new File(['hello'], 'notes.txt', { type: 'text/plain' }));
+
+      const response = await worker.fetch(
+        new Request('https://example.com/api/request', {
+          method: 'POST',
+          body: formData,
+        }),
+        env
+      );
+      const responseText = await response.text();
+
+      expect(response.status).toBe(400);
+      expect(responseText).toBe('offer photo bad type');
+      expect(insertedExchangeProposals).toHaveLength(0);
     } finally {
       global.fetch = prevFetch;
     }
