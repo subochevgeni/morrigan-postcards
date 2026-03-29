@@ -85,6 +85,11 @@ Configured in `wrangler.jsonc`:
 - `SITE_ACCESS_SIGNING_KEYS` - optional comma-separated signing keys accepted for cookie validation
 - `SITE_ACCESS_TTL_DAYS` - optional access lifetime in days (`14` by default)
 
+Telegram admin access controls:
+- `/accessword` - show current effective phrase and source (`D1 runtime state` or `env vars`)
+- `/setaccessword <new_phrase>` - set an exact access phrase from Telegram admin
+- `/rotateaccess [new_phrase]` - rotate phrase; auto-generates when omitted
+
 Private access endpoints:
 - `POST /api/unlock` - validates secret word and sets access cookie
 - `POST /api/logout` - clears access cookie

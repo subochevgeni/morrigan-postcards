@@ -1865,6 +1865,111 @@ describe('worker.fetch integration', () => {
     }
   });
 
+  it('sets access phrase from telegram admin command via /setaccessword', async () => {
+    const db = createDbMock();
+    const env = createEnv({ db, adminChatIds: '1001' });
+    env.SITE_ACCESS_PHRASE = 'old-secret';
+
+    const fetchMock = vi.fn(async (url) => {
+      if (url.includes('/sendMessage')) return { json: async () => ({ ok: true }) };
+      throw new Error(`Unexpected fetch URL: ${url}`);
+    });
+    const prevFetch = global.fetch;
+    global.fetch = fetchMock;
+
+    try {
+      const response = await worker.fetch(
+        new Request('https://example.com/tg', {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            'X-Telegram-Bot-Api-Secret-Token': env.TG_WEBHOOK_SECRET,
+          },
+          body: JSON.stringify({
+            message: {
+              text: '/setaccessword hand-picked-secret',
+              chat: { id: 1001 },
+              from: { username: 'admin' },
+            },
+          }),
+        }),
+        env
+      );
+      expect(response.status).toBe(200);
+
+      const sendMessageCalls = fetchMock.mock.calls.filter(([url]) =>
+        String(url).includes('/sendMessage')
+      );
+      expect(sendMessageCalls).toHaveLength(1);
+      const sendPayload = JSON.parse(sendMessageCalls[0][1].body);
+      expect(sendPayload.text).toContain('Access phrase rotated');
+      expect(sendPayload.text).toContain('Current: hand-picked-secret');
+      expect(sendPayload.text).toContain('Previous: old-secret');
+
+      const unlockWithNew = await worker.fetch(
+        new Request('https://example.com/api/unlock', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ secretWord: 'hand-picked-secret' }),
+        }),
+        env
+      );
+      expect(unlockWithNew.status).toBe(200);
+    } finally {
+      global.fetch = prevFetch;
+    }
+  });
+
+  it('shows access phrase set prompt from telegram admin keyboard command', async () => {
+    const db = createDbMock({
+      siteAccessState: {
+        current_phrase: 'db-current-secret',
+        previous_phrase: 'db-previous-secret',
+        updated_at: 1_700_000_000_000,
+        updated_by_chat_id: '1001',
+      },
+    });
+    const env = createEnv({ db, adminChatIds: '1001' });
+
+    const fetchMock = vi.fn(async (url) => {
+      if (url.includes('/sendMessage')) return { json: async () => ({ ok: true }) };
+      throw new Error(`Unexpected fetch URL: ${url}`);
+    });
+    const prevFetch = global.fetch;
+    global.fetch = fetchMock;
+
+    try {
+      const response = await worker.fetch(
+        new Request('https://example.com/tg', {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            'X-Telegram-Bot-Api-Secret-Token': env.TG_WEBHOOK_SECRET,
+          },
+          body: JSON.stringify({
+            message: {
+              text: '✏️ Set Access Word',
+              chat: { id: 1001 },
+              from: { username: 'admin' },
+            },
+          }),
+        }),
+        env
+      );
+      expect(response.status).toBe(200);
+
+      const sendMessageCalls = fetchMock.mock.calls.filter(([url]) =>
+        String(url).includes('/sendMessage')
+      );
+      expect(sendMessageCalls).toHaveLength(1);
+      const sendPayload = JSON.parse(sendMessageCalls[0][1].body);
+      expect(sendPayload.text).toContain('/setaccessword your-new-secret');
+      expect(sendPayload.text).toContain('Current: db-current-secret');
+    } finally {
+      global.fetch = prevFetch;
+    }
+  });
+
   it('sets webhook with callback_query updates via admin command', async () => {
     const env = createEnv({ adminChatIds: '1001' });
     const fetchMock = vi.fn(async (url, init) => {
